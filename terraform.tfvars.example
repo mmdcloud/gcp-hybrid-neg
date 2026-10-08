@@ -1,0 +1,72 @@
+# ==============================================================================
+# Azure Configuration
+# ==============================================================================
+azure_create_resource_group = true
+azure_resource_group_name   = "rg-hybrid-connectivity-prod"
+azure_location              = "eastus"
+azure_vnet_name             = "vnet-azure-hybrid"
+azure_vnet_address_spaces   = ["10.100.0.0/16"]
+azure_gateway_subnet_cidr   = "10.100.255.0/24"
+azure_workload_subnet_name  = "snet-azure-workload"
+azure_workload_subnet_cidr  = "10.100.1.0/24"
+azure_vpn_gateway_name      = "vgw-azure-hybrid-prod"
+azure_vpn_gateway_sku       = "VpnGw2AZ"
+azure_vpn_gateway_generation= "Generation2"
+azure_availability_zones    = ["1", "2", "3"]
+azure_bgp_asn               = 65515
+azure_bgp_apipa_ip_1        = "169.254.21.2"
+azure_bgp_apipa_ip_2        = "169.254.22.2"
+
+# ==============================================================================
+# Google Cloud Platform Configuration
+# ==============================================================================
+gcp_project_id              = "my-gcp-production-project-12345"
+gcp_region                  = "us-east1"
+gcp_network_name            = "vpc-gcp-hybrid"
+gcp_routing_mode            = "GLOBAL"
+gcp_workload_subnet_name    = "sb-gcp-workload"
+gcp_workload_subnet_cidr    = "10.200.1.0/24"
+gcp_enable_flow_logs        = true
+gcp_vpn_gateway_name        = "ha-vpn-gcp-hybrid-prod"
+gcp_external_vpn_gateway_name = "ext-gw-azure-vng"
+gcp_router_name             = "cr-gcp-hybrid-prod"
+gcp_bgp_asn                 = 65001
+gcp_bgp_apipa_ip_1          = "169.254.21.1"
+gcp_bgp_apipa_ip_2          = "169.254.22.1"
+gcp_bgp_advertise_mode      = "CUSTOM"
+gcp_bgp_advertised_groups   = ["ALL_SUBNETS"]
+gcp_tunnel_0_route_priority = 100
+gcp_tunnel_1_route_priority = 100
+
+# ==============================================================================
+# IPsec Policy Configuration (Hardened Production Standards)
+# ==============================================================================
+ipsec_dh_group              = "DHGroup14"
+ipsec_ike_encryption        = "AES256"
+ipsec_ike_integrity         = "SHA256"
+ipsec_encryption            = "AES256"
+ipsec_integrity             = "SHA256"
+ipsec_pfs_group             = "PFS2048"
+ipsec_sa_lifetime           = 27000
+ipsec_sa_datasize           = 102400000
+
+# ==============================================================================
+# Optional Test Connectivity VMs
+# ==============================================================================
+enable_test_vms             = false
+test_vm_admin_username      = "azureuser"
+test_vm_ssh_public_key      = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtV+q6b8t3d5YVqT2D1p4x5N3qE1M8h9bZ2w0vP1kLm hybrid-test-key"
+azure_test_vm_size          = "Standard_B1s"
+gcp_test_vm_zone            = "us-east1-b"
+gcp_test_vm_machine_type    = "e2-micro"
+
+# ==============================================================================
+# Common Tags
+# ==============================================================================
+tags = {
+  Environment = "production"
+  ManagedBy   = "terraform"
+  Project     = "azure-to-gcp-vpn"
+  Owner       = "network-team@example.com"
+}
+
