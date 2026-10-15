@@ -256,31 +256,62 @@ resource "aws_iam_instance_profile" "app_profile" {
 # -----------------------------------------------------------------------------
 # 3. SECURITY GROUPS (Strictly Chained)
 # -----------------------------------------------------------------------------
-resource "aws_security_group" "alb" {
-  name_prefix = "${var.environment}-alb-sg-"
-  description = "Controls traffic to the internal Application Load Balancer"
-  vpc_id      = module.aws_vpc.id
+module "alb_sg" {
+  source = "./modules/aws/security-groups"
+  name   = "alb-sg"
+  vpc_id = module.aws_vpc.id
 
-  ingress {
-    description = "HTTP ingress from allowed private networks"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_ingress_cidrs
-  }
+  ingress_rules = [
+    {
+      description     = "HTTP ingress from allowed private networks"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      security_groups = []
+      cidr_blocks     = var.allowed_ingress_cidrs
+    }
+  ]
 
-  egress {
-    description = "Outbound traffic to target backend instances"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  egress_rules = [
+    {
+      description = "Allow all outbound traffic"
+      from_port   = 0
+      to_port     = 0
+      protocol    = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  ]
 
-  lifecycle {
-    create_before_destroy = true
+  tags = {
+    Name = "alb-sg"
   }
 }
+
+# resource "aws_security_group" "alb" {
+#   name_prefix = "${var.environment}-alb-sg"
+#   description = "Controls traffic to the internal Application Load Balancer"
+#   vpc_id      = module.aws_vpc.id
+
+#   ingress {
+#     description = "HTTP ingress from allowed private networks"
+#     from_port   = 80
+#     to_port     = 80
+#     protocol    = "tcp"
+#     cidr_blocks = var.allowed_ingress_cidrs
+#   }
+
+#   egress {
+#     description = "Outbound traffic to target backend instances"
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+
+#   lifecycle {
+#     create_before_destroy = true
+#   }
+# }
 
 # Backend App Security Group
 resource "aws_security_group" "app" {
@@ -306,6 +337,37 @@ resource "aws_security_group" "app" {
 
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+module "app_sg" {
+  source = "./modules/aws/security-groups"
+  name   = "app-sg"
+  vpc_id = module.aws_vpc.id
+
+  ingress_rules = [
+    {
+      description     = "HTTP traffic only from the ALB security group"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      security_groups = [module.alb_sg.id]
+      cidr_blocks     = []
+    }
+  ]
+
+  egress_rules = [
+    {
+      description = "Allow all outbound traffic"
+      from_port   = 0
+      to_port     = 0
+      protocol    = "-1"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+  ]
+
+  tags = {
+    Name = "app-sg"
   }
 }
 
@@ -366,6 +428,53 @@ resource "aws_lb_listener" "http" {
 # -----------------------------------------------------------------------------
 # 5. LAUNCH TEMPLATE
 # -----------------------------------------------------------------------------
+module "aws_launch_template" {
+  source                               = "./modules/launch_template"
+  name                                 = "aws-launch-template"
+  description                          = "aws-launch-template"
+  ebs_optimized                        = false
+  image_id                             = data.aws_ami.ubuntu.id
+  instance_type                        = "t3.medium"
+  instance_initiated_shutdown_behavior = "stop"
+  instance_profile_name                = aws_iam_instance_profile.iam_instance_profile.name
+
+  network_interfaces = [
+    {
+      associate_public_ip_address = false
+      security_groups             = [module.carshub_asg_frontend_sg.id]
+    }
+  ]
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    set -xe
+    dnf update -y
+    dnf install -y nginx
+
+    # Create custom dynamic landing page with instance metadata
+    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+    AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+    cat <<HTML > /usr/share/nginx/html/index.html
+    <!DOCTYPE html>
+    <html>
+    <head><title>Internal Web Service</title></head>
+    <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
+      <h2>Hello from Internal NGINX</h2>
+      <p><b>Instance ID:</b> $INSTANCE_ID</p>
+      <p><b>Availability Zone:</b> $AZ</p>
+      <p><b>Status:</b> Healthy</p>
+    </body>
+    </html>
+    HTML
+
+    systemctl daemon-reload
+    systemctl enable --now nginx
+  EOF
+  )
+}
+
 resource "aws_launch_template" "app" {
   name_prefix   = "${var.environment}-app-lt-"
   image_id      = data.aws_ssm_parameter.al2023_ami.value
@@ -452,8 +561,23 @@ resource "aws_launch_template" "app" {
 }
 
 # -----------------------------------------------------------------------------
-# 6. AUTO SCALING GROUP
+# AUTO SCALING GROUP
 # -----------------------------------------------------------------------------
+module "app_asg" {
+  source                    = "./modules/aws/auto_scaling_group"
+  name                      = "app-asg"
+  min_size                  = var.asg_min_size
+  max_size                  = var.asg_max_size
+  desired_capacity          = var.asg_desired_capacity
+  health_check_type         = "ELB"
+  health_check_grace_period = 180
+  force_delete              = true
+  target_group_arns         = [module.carshub_frontend_lb.target_groups["carshub_frontend_lb_target_group"].arn]
+  vpc_zone_identifier       = module.carshub_vpc.private_subnets
+  launch_template_id        = module.carshub_frontend_launch_template.id
+  launch_template_version   = "$Default"
+}
+
 resource "aws_autoscaling_group" "app" {
   name_prefix         = "${var.environment}-app-asg-"
   vpc_zone_identifier = var.app_subnet_ids
@@ -463,7 +587,6 @@ resource "aws_autoscaling_group" "app" {
   max_size         = var.asg_max_size
   desired_capacity = var.asg_desired_capacity
 
-  # Delegates health checks to the ALB target group instead of just EC2 hypervisor status
   health_check_type         = "ELB"
   health_check_grace_period = 180
 
@@ -488,18 +611,21 @@ resource "aws_autoscaling_group" "app" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# GCP Load balancer Configuration
+# -----------------------------------------------------------------------------
 module "hybrid_neg" {
   source     = "./modules/gcp/network_endpoint_groups/hybrid_neg"
-  project_id = var.project_id
-  name   = "hybrid-neg"
-  network = module.gcp_vpc.vpc_name
+  project_id = var.gcp_project_id
+  name       = "hybrid-neg"
+  network    = module.gcp_vpc.vpc_name
   subnetwork = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
-  zone = "" 
+  zone       = ""
 }
 
 module "gcp_lb" {
   source                   = "./modules/gcp/lb"
-  project_id               = var.project_id
+  project_id               = var.gcp_project_id
   name                     = "gcp-lb"
   load_balancer_type       = "EXTERNAL"
   region                   = var.gcp_region

@@ -21,7 +21,7 @@ variable "aws_region" {
 variable "gcp_region" {
   type        = string
   description = "AWS Region"
-  default     = "us-central-1"
+  default     = "us-central1"
 }
 
 variable "gcp_project_id" {
@@ -38,16 +38,6 @@ variable "environment" {
 variable "vpc_id" {
   type        = string
   description = "Existing VPC ID where resources will be deployed."
-}
-
-variable "alb_subnet_ids" {
-  type        = list(string)
-  description = "Private subnets for the internal ALB (minimum 2 AZs required)."
-}
-
-variable "app_subnet_ids" {
-  type        = list(string)
-  description = "Private subnets where ASG EC2 instances are launched."
 }
 
 variable "allowed_ingress_cidrs" {
@@ -75,4 +65,19 @@ variable "asg_max_size" {
 variable "asg_desired_capacity" {
   type        = number
   default     = 2
+}
+
+variable "public_subnets" {
+  type        = list(string)
+  description = "CIDR blocks for public subnets"
+}
+
+variable "private_subnets" {
+  type        = list(string)
+  description = "CIDR blocks for private subnets"
+}
+
+variable "azs" {
+  type        = list(string)
+  description = "Availability zones to deploy into"
 }
