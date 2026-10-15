@@ -3,32 +3,16 @@ terraform {
 
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.100"
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
     }
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.30"
+      version = "~> 8.0"
     }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
-    }
-  }
-
-  # Backend configuration can be configured by the user via backend.tf or CLI flags
-  # backend "azurerm" {} or backend "gcs" {}
-}
-
-provider "azurerm" {
-  features {
-    resource_group {
-      prevent_deletion_if_contains_resources = false
-    }
-    virtual_machine {
-      delete_os_disk_on_deletion     = true
-      graceful_shutdown              = false
-      skip_shutdown_and_force_delete = false
     }
   }
 }
@@ -38,3 +22,6 @@ provider "google" {
   region  = var.gcp_region
 }
 
+provider "aws" {
+  region  = var.aws_region
+}
