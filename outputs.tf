@@ -14,17 +14,21 @@ output "gcp_hybrid_neg_name" {
 }
 
 output "registered_hybrid_endpoints" {
-  description = "Target private IP endpoints in AWS registered with the GCP Hybrid NEG."
-  value       = var.hybrid_neg_endpoints
+  description = "AWS NLB static private IPs registered with the GCP Hybrid NEG."
+  value       = local.hybrid_neg_endpoints
 }
 
-output "aws_internal_alb_dns_name" {
-  description = "DNS name of the AWS Internal Application Load Balancer."
-  value       = module.internal_alb.dns_name
+output "aws_internal_nlb_dns_name" {
+  description = "DNS name of the AWS internal Network Load Balancer."
+  value       = module.internal_nlb.dns_name
 }
 
-output "aws_internal_alb_arn" {
-  description = "ARN of the AWS Internal Application Load Balancer."
-  value       = module.internal_alb.arn
+output "aws_internal_nlb_arn" {
+  description = "ARN of the AWS internal Network Load Balancer."
+  value       = module.internal_nlb.arn
 }
 
+output "bgp_status_command" {
+  description = "Command to verify all four BGP sessions are Established."
+  value       = "gcloud compute routers get-status ${google_compute_router.router.name} --region ${var.gcp_region} --project ${var.gcp_project_id}"
+}

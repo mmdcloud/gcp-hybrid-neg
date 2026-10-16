@@ -4,18 +4,18 @@
 
 variable "tags" {
   type        = map(string)
-  description = "Resource tags applied to Azure resources and labels where applicable."
+  description = "Resource tags applied to AWS resources."
   default = {
     Environment = "production"
     ManagedBy   = "terraform"
-    Project     = "azure-to-gcp-vpn"
+    Project     = "aws-to-gcp-hybrid-lb"
   }
 }
 
 variable "aws_region" {
   type        = string
-  description = "AWS Region"
-  default     = "ap-southeast-2"
+  description = "AWS Region (must match the AZs in var.azs)."
+  default     = "us-east-1"
 }
 
 variable "gcp_region" {
@@ -37,15 +37,19 @@ variable "gcp_project_id" {
 
 variable "environment" {
   type        = string
-  default     = "prod"
-  description = "Deployment environment name."
+  default     = "dev"
+  description = "Deployment environment name. 'prod' enables NLB deletion protection."
 }
 
-
-variable "allowed_ingress_cidrs" {
-  type        = list(string)
-  default     = ["10.0.0.0/8", "35.191.0.0/16", "130.211.0.0/22"]
-  description = "Internal CIDR and GCP health check ranges allowed to query the ALB over port 80."
+variable "gcp_lb_source_cidrs" {
+  type = list(string)
+  default = [
+    "34.96.0.0/20",    # Envoy-based global external Application LB proxies / probes
+    "34.127.192.0/18", # Envoy-based global external Application LB proxies / probes
+    "35.191.0.0/16",   # Classic health check probes
+    "130.211.0.0/22"   # Classic health check probes
+  ]
+  description = "Google LB and health check source ranges. Allowed into the NLB SG and advertised from Cloud Router over BGP."
 }
 
 variable "instance_type" {
@@ -76,28 +80,10 @@ variable "public_subnets" {
 
 variable "private_subnets" {
   type        = list(string)
-  description = "CIDR blocks for private subnets"
+  description = "CIDR blocks for private subnets. The NLB gets a static IP (.10) in each."
 }
 
 variable "azs" {
   type        = list(string)
   description = "Availability zones to deploy into"
-}
-
-variable "hybrid_neg_endpoints" {
-  type = list(object({
-    ip_address = string
-    port       = optional(number)
-  }))
-  description = "List of private IP endpoints in AWS to register with the GCP Hybrid NEG."
-  default = [
-    {
-      ip_address = "10.0.4.10"
-      port       = 80
-    },
-    {
-      ip_address = "10.0.5.10"
-      port       = 80
-    }
-  ]
 }

@@ -1,17 +1,6 @@
-resource "random_password" "shared_secret_0" {
-  length  = 32
-  special = false
-}
-
-resource "random_password" "shared_secret_1" {
-  length  = 32
-  special = false
-}
-
-locals {
-  psk_tunnel_0 = "vpn_${random_password.shared_secret_0.result}"
-  psk_tunnel_1 = "vpn_${random_password.shared_secret_1.result}"
-}
+# =============================================================================
+# AWS <-> GCP HA VPN (4 tunnels, BGP) + GCP external LB -> hybrid NEG -> AWS NLB
+# =============================================================================
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -28,6 +17,41 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Tunnel topology
+#
+# 2 AWS VPN connections x 2 tunnels each = 4 tunnels, matched to the 4 interfaces
+# of the GCP external VPN gateway (FOUR_IPS_REDUNDANCY). Each GCP HA VPN
+# interface (0/1) terminates both tunnels of one AWS connection (0/1).
+# -----------------------------------------------------------------------------
+locals {
+  vpn_tunnels = {
+    "0-1" = { conn = "0", aws_tunnel = 1, gcp_interface = 0, peer_interface = 0 }
+    "0-2" = { conn = "0", aws_tunnel = 2, gcp_interface = 0, peer_interface = 1 }
+    "1-1" = { conn = "1", aws_tunnel = 1, gcp_interface = 1, peer_interface = 2 }
+    "1-2" = { conn = "1", aws_tunnel = 2, gcp_interface = 1, peer_interface = 3 }
+  }
+
+  aws_vpn_connections = {
+    "0" = aws_vpn_connection.vpn_conn_0
+    "1" = aws_vpn_connection.vpn_conn_1
+  }
+}
+
+# One PSK per tunnel. AWS rejects PSKs starting with "0", so prefix with a letter.
+resource "random_password" "psk" {
+  for_each = local.vpn_tunnels
+  length   = 32
+  special  = false
+}
+
+locals {
+  psk = { for k, v in random_password.psk : k => "vpn_${v.result}" }
+}
+
+# -----------------------------------------------------------------------------
+# GCP: VPC, Cloud Router, HA VPN gateway
+# -----------------------------------------------------------------------------
 module "gcp_vpc" {
   source                          = "./modules/gcp/vpc"
   vpc_name                        = "gcp-vpc"
@@ -55,13 +79,17 @@ module "gcp_vpc" {
   firewall_data = [
     {
       name          = "allow-from-aws"
-      description   = "Allow all ingress traffic from AWS VPC subnets"
+      description   = "Allow web/ICMP traffic from the AWS VPC"
       direction     = "INGRESS"
       priority      = 1000
       source_ranges = ["10.0.0.0/16"]
       allow_list = [
         {
-          protocol = "all"
+          protocol = "tcp"
+          ports    = ["80", "443"]
+        },
+        {
+          protocol = "icmp"
         }
       ]
     },
@@ -91,14 +119,14 @@ resource "google_compute_router" "router" {
     advertise_mode    = "CUSTOM"
     advertised_groups = ["ALL_SUBNETS"]
 
-    advertised_ip_ranges {
-      range       = "35.191.0.0/16"
-      description = "Google Cloud Health Check Probes"
-    }
-
-    advertised_ip_ranges {
-      range       = "130.211.0.0/22"
-      description = "Google Cloud Health Check Probes"
+    # Advertise the Google LB / health-check source ranges so AWS routes return
+    # traffic for them back over the VPN.
+    dynamic "advertised_ip_ranges" {
+      for_each = toset(var.gcp_lb_source_cidrs)
+      content {
+        range       = advertised_ip_ranges.value
+        description = "Google Cloud LB / health check source range"
+      }
     }
   }
 }
@@ -109,6 +137,9 @@ resource "google_compute_ha_vpn_gateway" "ha_gateway" {
   network = module.gcp_vpc.vpc_name
 }
 
+# -----------------------------------------------------------------------------
+# AWS: VPC, VGW, customer gateways, VPN connections
+# -----------------------------------------------------------------------------
 module "aws_vpc" {
   source                  = "./modules/aws/vpc"
   vpc_name                = "aws-vpc"
@@ -123,9 +154,7 @@ module "aws_vpc" {
   enable_nat_gateway      = true
   single_nat_gateway      = true
   one_nat_gateway_per_az  = false
-  tags = {
-    Project = "aws-vpc"
-  }
+  tags                    = var.tags
 }
 
 resource "aws_vpn_gateway" "vpn_gw" {
@@ -149,7 +178,7 @@ resource "aws_vpn_gateway_route_propagation" "private" {
 }
 
 resource "aws_customer_gateway" "gcp_cgw_0" {
-  bgp_asn    = 64514 # GCP Cloud Router ASN
+  bgp_asn    = google_compute_router.router.bgp[0].asn
   ip_address = google_compute_ha_vpn_gateway.ha_gateway.vpn_interfaces[0].ip_address
   type       = "ipsec.1"
 
@@ -159,7 +188,7 @@ resource "aws_customer_gateway" "gcp_cgw_0" {
 }
 
 resource "aws_customer_gateway" "gcp_cgw_1" {
-  bgp_asn    = 64514 # GCP Cloud Router ASN
+  bgp_asn    = google_compute_router.router.bgp[0].asn
   ip_address = google_compute_ha_vpn_gateway.ha_gateway.vpn_interfaces[1].ip_address
   type       = "ipsec.1"
 
@@ -168,6 +197,9 @@ resource "aws_customer_gateway" "gcp_cgw_1" {
   }
 }
 
+# Inside CIDRs must be /30s in 169.254.0.0/16 and must avoid the AWS-reserved
+# blocks (169.254.0.0/30 - 169.254.5.0/30, 169.254.169.252/30). In each /30,
+# .1 is the AWS VGW and .2 is the GCP Cloud Router interface.
 resource "aws_vpn_connection" "vpn_conn_0" {
   vpn_gateway_id      = aws_vpn_gateway.vpn_gw.id
   customer_gateway_id = aws_customer_gateway.gcp_cgw_0.id
@@ -175,8 +207,12 @@ resource "aws_vpn_connection" "vpn_conn_0" {
   static_routes_only  = false
 
   tunnel1_inside_cidr   = "169.254.10.0/30"
-  tunnel1_preshared_key = local.psk_tunnel_0
+  tunnel1_preshared_key = local.psk["0-1"]
   tunnel1_ike_versions  = ["ikev2"]
+
+  tunnel2_inside_cidr   = "169.254.10.4/30"
+  tunnel2_preshared_key = local.psk["0-2"]
+  tunnel2_ike_versions  = ["ikev2"]
 
   tags = {
     Name = "aws-to-gcp-conn-0"
@@ -190,17 +226,24 @@ resource "aws_vpn_connection" "vpn_conn_1" {
   static_routes_only  = false
 
   tunnel1_inside_cidr   = "169.254.11.0/30"
-  tunnel1_preshared_key = local.psk_tunnel_1
+  tunnel1_preshared_key = local.psk["1-1"]
   tunnel1_ike_versions  = ["ikev2"]
+
+  tunnel2_inside_cidr   = "169.254.11.4/30"
+  tunnel2_preshared_key = local.psk["1-2"]
+  tunnel2_ike_versions  = ["ikev2"]
 
   tags = {
     Name = "aws-to-gcp-conn-1"
   }
 }
 
+# -----------------------------------------------------------------------------
+# GCP side of the VPN: external gateway, 4 tunnels, router interfaces, BGP peers
+# -----------------------------------------------------------------------------
 resource "google_compute_external_vpn_gateway" "external_gw" {
   name            = "peer-gw"
-  redundancy_type = "TWO_IPS_REDUNDANCY"
+  redundancy_type = "FOUR_IPS_REDUNDANCY"
 
   interface {
     id         = 0
@@ -209,99 +252,58 @@ resource "google_compute_external_vpn_gateway" "external_gw" {
 
   interface {
     id         = 1
+    ip_address = aws_vpn_connection.vpn_conn_0.tunnel2_address
+  }
+
+  interface {
+    id         = 2
     ip_address = aws_vpn_connection.vpn_conn_1.tunnel1_address
+  }
+
+  interface {
+    id         = 3
+    ip_address = aws_vpn_connection.vpn_conn_1.tunnel2_address
   }
 }
 
-resource "google_compute_vpn_tunnel" "tunnel_0" {
-  name                            = "ha-vpn-tunnel-0"
+resource "google_compute_vpn_tunnel" "tunnel" {
+  for_each = local.vpn_tunnels
+
+  name                            = "ha-vpn-tunnel-${each.key}"
   region                          = var.gcp_region
   vpn_gateway                     = google_compute_ha_vpn_gateway.ha_gateway.id
-  vpn_gateway_interface           = 0
+  vpn_gateway_interface           = each.value.gcp_interface
   peer_external_gateway           = google_compute_external_vpn_gateway.external_gw.id
-  peer_external_gateway_interface = 0
-  shared_secret                   = local.psk_tunnel_0
+  peer_external_gateway_interface = each.value.peer_interface
+  shared_secret                   = local.psk[each.key]
   router                          = google_compute_router.router.id
   ike_version                     = 2
 }
 
-resource "google_compute_vpn_tunnel" "tunnel_1" {
-  name                            = "ha-vpn-tunnel-1"
-  region                          = var.gcp_region
-  vpn_gateway                     = google_compute_ha_vpn_gateway.ha_gateway.id
-  vpn_gateway_interface           = 1
-  peer_external_gateway           = google_compute_external_vpn_gateway.external_gw.id
-  peer_external_gateway_interface = 1
-  shared_secret                   = local.psk_tunnel_1
-  router                          = google_compute_router.router.id
-  ike_version                     = 2
-}
+resource "google_compute_router_interface" "interface" {
+  for_each = local.vpn_tunnels
 
-# AWS Site-to-Site VPN explicitly prohibits the following link-local /30 CIDR blocks because they are reserved for internal AWS infrastructure and link-local services (such as the EC2 metadata endpoint):
-
-# 169.254.0.0/30
-# 169.254.1.0/30
-# 169.254.2.0/30
-# 169.254.3.0/30
-# 169.254.4.0/30
-# 169.254.5.0/30
-# 169.254.169.252/30
-
-# Using 169.254.1.0/30 and 169.254.2.0/30 triggers a provider validation error. Furthermore, inside an AWS Site-to-Site VPN /30 block:
-
-# Host 1 (.1): Automatically allocated to the AWS Virtual Private Gateway (VGW) (tunnel1_vgw_inside_address).
-# Host 2 (.2): Allocated to the Customer Gateway (GCP Cloud Router interface) (tunnel1_cgw_inside_address).
-
-resource "google_compute_router_interface" "router_interface_0" {
-  name       = "cr-interface-0"
+  name       = "cr-interface-${each.key}"
   router     = google_compute_router.router.name
   region     = var.gcp_region
-  ip_range   = "169.254.10.2/30"
-  vpn_tunnel = google_compute_vpn_tunnel.tunnel_0.name
+  ip_range   = "${local.aws_vpn_connections[each.value.conn]["tunnel${each.value.aws_tunnel}_cgw_inside_address"]}/30"
+  vpn_tunnel = google_compute_vpn_tunnel.tunnel[each.key].name
 }
 
-resource "google_compute_router_interface" "router_interface_1" {
-  name       = "cr-interface-1"
-  router     = google_compute_router.router.name
-  region     = var.gcp_region
-  ip_range   = "169.254.11.2/30"
-  vpn_tunnel = google_compute_vpn_tunnel.tunnel_1.name
-}
+resource "google_compute_router_peer" "bgp_peer" {
+  for_each = local.vpn_tunnels
 
-resource "google_compute_router_peer" "bgp_peer_0" {
-  name                      = "bgp-peer-0"
+  name                      = "bgp-peer-${each.key}"
   router                    = google_compute_router.router.name
   region                    = var.gcp_region
-  peer_ip_address           = "169.254.10.1"
-  peer_asn                  = 64512
-  interface                 = google_compute_router_interface.router_interface_0.name
-  advertised_route_priority = 100
-}
-
-resource "google_compute_router_peer" "bgp_peer_1" {
-  name                      = "bgp-peer-1"
-  router                    = google_compute_router.router.name
-  region                    = var.gcp_region
-  peer_ip_address           = "169.254.11.1"
-  peer_asn                  = 64512
-  interface                 = google_compute_router_interface.router_interface_1.name
+  peer_ip_address           = local.aws_vpn_connections[each.value.conn]["tunnel${each.value.aws_tunnel}_vgw_inside_address"]
+  peer_asn                  = aws_vpn_gateway.vpn_gw.amazon_side_asn
+  interface                 = google_compute_router_interface.interface[each.key].name
   advertised_route_priority = 100
 }
 
 # -----------------------------------------------------------------------------
-# 1. DATA SOURCES: AMI & Availability Zones
-# -----------------------------------------------------------------------------
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
-# Fetches the latest Amazon Linux 2023 minimal AMI
-data "aws_ssm_parameter" "al2023_ami" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-minimal-kernel-default-x86_64"
-}
-
-# -----------------------------------------------------------------------------
-# 2. IAM ROLE & INSTANCE PROFILE (SSM Access, No SSH keys needed)
+# IAM role & instance profile (SSM access, no SSH keys)
 # -----------------------------------------------------------------------------
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
@@ -329,36 +331,36 @@ resource "aws_iam_instance_profile" "app_profile" {
 }
 
 # -----------------------------------------------------------------------------
-# 3. SECURITY GROUPS (Strictly Chained)
+# Security groups (chained: GCP LB ranges -> NLB -> app instances)
 # -----------------------------------------------------------------------------
-module "alb_sg" {
+module "nlb_sg" {
   source = "./modules/aws/security-groups"
-  name   = "alb-sg"
+  name   = "nlb-sg"
   vpc_id = module.aws_vpc.vpc_id
 
   ingress_rules = [
     {
-      description     = "HTTP ingress from allowed private networks"
+      description     = "HTTP from Google LB / health check ranges arriving over the VPN"
       from_port       = 80
       to_port         = 80
       protocol        = "tcp"
       security_groups = []
-      cidr_blocks     = var.allowed_ingress_cidrs
+      cidr_blocks     = var.gcp_lb_source_cidrs
     }
   ]
 
   egress_rules = [
     {
-      description = "Allow all outbound traffic"
+      description = "Forward to targets inside the VPC"
       from_port   = 0
       to_port     = 0
       protocol    = "-1"
-      cidr_blocks = ["0.0.0.0/0"]
+      cidr_blocks = ["10.0.0.0/16"]
     }
   ]
 
   tags = {
-    Name = "alb-sg"
+    Name = "nlb-sg"
   }
 }
 
@@ -369,18 +371,18 @@ module "app_sg" {
 
   ingress_rules = [
     {
-      description     = "HTTP traffic only from the ALB security group"
+      description     = "HTTP only from the NLB security group"
       from_port       = 80
       to_port         = 80
       protocol        = "tcp"
-      security_groups = [module.alb_sg.id]
+      security_groups = [module.nlb_sg.id]
       cidr_blocks     = []
     }
   ]
 
   egress_rules = [
     {
-      description = "Allow egress for OS updates / package repositories via NAT/VPC endpoints"
+      description = "Egress for OS updates / package repositories via NAT"
       from_port   = 0
       to_port     = 0
       protocol    = "-1"
@@ -394,26 +396,45 @@ module "app_sg" {
 }
 
 # -----------------------------------------------------------------------------
-# 4. INTERNAL APPLICATION LOAD BALANCER
+# Internal NLB with a fixed private IP in each private subnet.
+# The hybrid NEG needs stable IPs; ASG instance IPs and ALB node IPs are not.
 # -----------------------------------------------------------------------------
-module "internal_alb" {
+locals {
+  # .10 in each private subnet (e.g. 10.0.4.10, 10.0.5.10, 10.0.6.10)
+  nlb_private_ips = [for cidr in var.private_subnets : cidrhost(cidr, 10)]
+
+  hybrid_neg_endpoints = [
+    for ip in local.nlb_private_ips : {
+      ip_address = ip
+      port       = 80
+    }
+  ]
+}
+
+module "internal_nlb" {
   source  = "terraform-aws-modules/alb/aws"
   version = "~> 9.0"
 
-  name_prefix                = "int-lb"
-  load_balancer_type         = "application"
-  internal                   = true # private IPs only
-  vpc_id                     = module.aws_vpc.vpc_id
-  subnets                    = module.aws_vpc.private_subnets
-  security_groups            = [module.alb_sg.id]
-  create_security_group      = false # we're passing our own SG
-  drop_invalid_header_fields = true
-  enable_deletion_protection = var.environment == "prod" ? true : false
+  name_prefix                      = "int-nl"
+  load_balancer_type               = "network"
+  internal                         = true
+  vpc_id                           = module.aws_vpc.vpc_id
+  security_groups                  = [module.nlb_sg.id]
+  create_security_group            = false
+  enable_cross_zone_load_balancing = true
+  enable_deletion_protection       = var.environment == "prod"
+
+  subnet_mapping = [
+    for i, cidr in var.private_subnets : {
+      subnet_id            = module.aws_vpc.private_subnets[i]
+      private_ipv4_address = cidrhost(cidr, 10)
+    }
+  ]
 
   listeners = {
-    http = {
+    tcp_80 = {
       port     = 80
-      protocol = "HTTP"
+      protocol = "TCP"
       forward = {
         target_group_key = "app"
       }
@@ -423,33 +444,33 @@ module "internal_alb" {
   target_groups = {
     app = {
       name_prefix          = "app-tg"
-      backend_protocol     = "HTTP"
+      backend_protocol     = "TCP"
       backend_port         = 80
       target_type          = "instance"
       deregistration_delay = 30
-      create_attachment    = false # attach via ASG / aws_lb_target_group_attachment
+      preserve_client_ip   = false # targets see NLB IPs, so app_sg can reference nlb_sg
+      create_attachment    = false # attached via the ASG
 
       health_check = {
         enabled             = true
-        path                = "/"
         protocol            = "HTTP"
+        path                = "/"
         port                = "traffic-port"
         matcher             = "200"
-        interval            = 15
-        timeout             = 5
-        healthy_threshold   = 2
+        interval            = 10 # NLB only allows 10 or 30
+        healthy_threshold   = 3  # NLB requires healthy == unhealthy
         unhealthy_threshold = 3
       }
     }
   }
 
-  tags = {
-    Name = "${var.environment}-internal-alb"
-  }
+  tags = merge(var.tags, {
+    Name = "${var.environment}-internal-nlb"
+  })
 }
 
 # -----------------------------------------------------------------------------
-# 5. LAUNCH TEMPLATE
+# Launch template + ASG
 # -----------------------------------------------------------------------------
 module "aws_launch_template" {
   source                               = "./modules/aws/launch_template"
@@ -472,36 +493,20 @@ module "aws_launch_template" {
     #!/bin/bash
     set -xe
 
-    # Detect package manager and install dependencies
-    if command -v apt-get &>/dev/null; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y
-      apt-get install -y nginx curl
-      WEB_DIR="/var/www/html"
-    elif command -v dnf &>/dev/null; then
-      dnf update -y
-      dnf install -y nginx curl
-      WEB_DIR="/usr/share/nginx/html"
-    elif command -v yum &>/dev/null; then
-      yum update -y
-      yum install -y nginx curl
-      WEB_DIR="/usr/share/nginx/html"
-    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y nginx curl
 
-    # Fetch IMDSv2 metadata safely
-    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+    # IMDSv2 metadata
+    TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+    INSTANCE_ID=$(hostname)
+    AZ="unknown"
     if [ -n "$TOKEN" ]; then
-      INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || hostname)
-      AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone || echo "unknown")
-    else
-      INSTANCE_ID=$(hostname)
-      AZ="unknown"
+      INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || hostname)
+      AZ=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone || echo "unknown")
     fi
 
-    # Write index.html to standard web directories
-    mkdir -p "$WEB_DIR" /usr/share/nginx/html /var/www/html
-
-    cat <<HTML | tee "$WEB_DIR/index.html" /usr/share/nginx/html/index.html /var/www/html/index.html
+    cat > /var/www/html/index.html <<HTML
     <!DOCTYPE html>
     <html>
     <head><title>Internal Web Service</title></head>
@@ -514,15 +519,11 @@ module "aws_launch_template" {
     </html>
     HTML
 
-    systemctl daemon-reload
     systemctl enable --now nginx
   EOF
   )
 }
 
-# -----------------------------------------------------------------------------
-# AUTO SCALING GROUP
-# -----------------------------------------------------------------------------
 module "app_asg" {
   source                    = "./modules/aws/auto_scaling_group"
   name                      = "app-asg"
@@ -532,14 +533,14 @@ module "app_asg" {
   health_check_type         = "ELB"
   health_check_grace_period = 180
   force_delete              = true
-  target_group_arns         = [module.internal_alb.target_groups["app"].arn]
+  target_group_arns         = [module.internal_nlb.target_groups["app"].arn]
   vpc_zone_identifier       = module.aws_vpc.private_subnets
   launch_template_id        = module.aws_launch_template.id
   launch_template_version   = "$Latest"
 }
 
 # -----------------------------------------------------------------------------
-# GCP Load balancer Configuration
+# GCP external load balancer -> hybrid NEG -> AWS NLB private IPs (over VPN)
 # -----------------------------------------------------------------------------
 module "hybrid_neg" {
   source       = "./modules/gcp/network_endpoint_groups/hybrid_neg"
@@ -548,8 +549,10 @@ module "hybrid_neg" {
   network      = module.gcp_vpc.vpc_name
   subnetwork   = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
   default_port = 80
-  endpoints    = var.hybrid_neg_endpoints
+  endpoints    = local.hybrid_neg_endpoints
   zone         = var.gcp_zone
+
+  depends_on = [google_compute_router_peer.bgp_peer]
 }
 
 module "gcp_lb" {
