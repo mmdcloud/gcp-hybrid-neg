@@ -44,8 +44,8 @@ variable "environment" {
 
 variable "allowed_ingress_cidrs" {
   type        = list(string)
-  default     = ["10.0.0.0/8"]
-  description = "Internal CIDR ranges allowed to query the ALB over port 80."
+  default     = ["10.0.0.0/8", "35.191.0.0/16", "130.211.0.0/22"]
+  description = "Internal CIDR and GCP health check ranges allowed to query the ALB over port 80."
 }
 
 variable "instance_type" {
@@ -82,4 +82,22 @@ variable "private_subnets" {
 variable "azs" {
   type        = list(string)
   description = "Availability zones to deploy into"
+}
+
+variable "hybrid_neg_endpoints" {
+  type = list(object({
+    ip_address = string
+    port       = optional(number)
+  }))
+  description = "List of private IP endpoints in AWS to register with the GCP Hybrid NEG."
+  default = [
+    {
+      ip_address = "10.0.4.10"
+      port       = 80
+    },
+    {
+      ip_address = "10.0.5.10"
+      port       = 80
+    }
+  ]
 }

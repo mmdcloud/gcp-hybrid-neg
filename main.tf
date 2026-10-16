@@ -8,6 +8,11 @@ resource "random_password" "shared_secret_1" {
   special = false
 }
 
+locals {
+  psk_tunnel_0 = "vpn_${random_password.shared_secret_0.result}"
+  psk_tunnel_1 = "vpn_${random_password.shared_secret_1.result}"
+}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -28,7 +33,7 @@ module "gcp_vpc" {
   vpc_name                        = "gcp-vpc"
   delete_default_routes_on_create = false
   auto_create_subnetworks         = false
-  routing_mode                    = "REGIONAL"
+  routing_mode                    = "GLOBAL"
   subnets = [
     {
       name                     = "workload-subnet"
@@ -47,7 +52,33 @@ module "gcp_vpc" {
       ip_cidr_range            = "10.20.1.0/24"
     }
   ]
-  firewall_data = []
+  firewall_data = [
+    {
+      name          = "allow-from-aws"
+      description   = "Allow all ingress traffic from AWS VPC subnets"
+      direction     = "INGRESS"
+      priority      = 1000
+      source_ranges = ["10.0.0.0/16"]
+      allow_list = [
+        {
+          protocol = "all"
+        }
+      ]
+    },
+    {
+      name          = "allow-health-checks"
+      description   = "Allow Google Cloud Load Balancer health check probes"
+      direction     = "INGRESS"
+      priority      = 1000
+      source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+      allow_list = [
+        {
+          protocol = "tcp"
+          ports    = ["80", "443"]
+        }
+      ]
+    }
+  ]
 }
 
 resource "google_compute_router" "router" {
@@ -56,8 +87,19 @@ resource "google_compute_router" "router" {
   network = module.gcp_vpc.vpc_name
 
   bgp {
-    asn            = 64514
-    advertise_mode = "DEFAULT"
+    asn               = 64514
+    advertise_mode    = "CUSTOM"
+    advertised_groups = ["ALL_SUBNETS"]
+
+    advertised_ip_ranges {
+      range       = "35.191.0.0/16"
+      description = "Google Cloud Health Check Probes"
+    }
+
+    advertised_ip_ranges {
+      range       = "130.211.0.0/22"
+      description = "Google Cloud Health Check Probes"
+    }
   }
 }
 
@@ -100,6 +142,12 @@ resource "aws_vpn_gateway_route_propagation" "route_propagation" {
   route_table_id = module.aws_vpc.vpc_main_route_table_id
 }
 
+resource "aws_vpn_gateway_route_propagation" "private" {
+  count          = length(module.aws_vpc.private_route_table_ids)
+  vpn_gateway_id = aws_vpn_gateway.vpn_gw.id
+  route_table_id = module.aws_vpc.private_route_table_ids[count.index]
+}
+
 resource "aws_customer_gateway" "gcp_cgw_0" {
   bgp_asn    = 64514 # GCP Cloud Router ASN
   ip_address = google_compute_ha_vpn_gateway.ha_gateway.vpn_interfaces[0].ip_address
@@ -127,7 +175,7 @@ resource "aws_vpn_connection" "vpn_conn_0" {
   static_routes_only  = false
 
   tunnel1_inside_cidr   = "169.254.10.0/30"
-  tunnel1_preshared_key = random_password.shared_secret_0.result
+  tunnel1_preshared_key = local.psk_tunnel_0
   tunnel1_ike_versions  = ["ikev2"]
 
   tags = {
@@ -142,7 +190,7 @@ resource "aws_vpn_connection" "vpn_conn_1" {
   static_routes_only  = false
 
   tunnel1_inside_cidr   = "169.254.11.0/30"
-  tunnel1_preshared_key = random_password.shared_secret_1.result
+  tunnel1_preshared_key = local.psk_tunnel_1
   tunnel1_ike_versions  = ["ikev2"]
 
   tags = {
@@ -172,7 +220,7 @@ resource "google_compute_vpn_tunnel" "tunnel_0" {
   vpn_gateway_interface           = 0
   peer_external_gateway           = google_compute_external_vpn_gateway.external_gw.id
   peer_external_gateway_interface = 0
-  shared_secret                   = random_password.shared_secret_0.result
+  shared_secret                   = local.psk_tunnel_0
   router                          = google_compute_router.router.id
   ike_version                     = 2
 }
@@ -184,7 +232,7 @@ resource "google_compute_vpn_tunnel" "tunnel_1" {
   vpn_gateway_interface           = 1
   peer_external_gateway           = google_compute_external_vpn_gateway.external_gw.id
   peer_external_gateway_interface = 1
-  shared_secret                   = random_password.shared_secret_1.result
+  shared_secret                   = local.psk_tunnel_1
   router                          = google_compute_router.router.id
   ike_version                     = 2
 }
@@ -472,91 +520,6 @@ module "aws_launch_template" {
   )
 }
 
-# resource "aws_launch_template" "app" {
-#   name_prefix   = "${var.environment}-app-lt-"
-#   image_id      = data.aws_ssm_parameter.al2023_ami.value
-#   instance_type = var.instance_type
-
-#   iam_instance_profile {
-#     arn = aws_iam_instance_profile.app_profile.arn
-#   }
-
-#   vpc_security_group_ids = [aws_security_group.app.id]
-
-#   # Production IMDSv2 enforcement (Blocks SSRF credential abuse)
-#   metadata_options {
-#     http_endpoint               = "enabled"
-#     http_tokens                 = "required"
-#     http_put_response_hop_limit = 1
-#     instance_metadata_tags      = "enabled"
-#   }
-
-#   monitoring {
-#     enabled = true
-#   }
-
-#   block_device_mappings {
-#     device_name = "/dev/xvda"
-
-#     ebs {
-#       volume_size           = 20
-#       volume_type           = "gp3"
-#       iops                  = 3000
-#       throughput            = 125
-#       encrypted             = true
-#       delete_on_termination = true
-#     }
-#   }
-
-#   # Cloud-init script configuring Nginx
-#   user_data = base64encode(<<-EOF
-#     #!/bin/bash
-#     set -xe
-#     dnf update -y
-#     dnf install -y nginx
-
-#     # Create custom dynamic landing page with instance metadata
-#     TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-#     INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-#     AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
-
-#     cat <<HTML > /usr/share/nginx/html/index.html
-#     <!DOCTYPE html>
-#     <html>
-#     <head><title>Internal Web Service</title></head>
-#     <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
-#       <h2>Hello from Internal NGINX</h2>
-#       <p><b>Instance ID:</b> $INSTANCE_ID</p>
-#       <p><b>Availability Zone:</b> $AZ</p>
-#       <p><b>Status:</b> Healthy</p>
-#     </body>
-#     </html>
-#     HTML
-
-#     systemctl daemon-reload
-#     systemctl enable --now nginx
-#   EOF
-#   )
-
-#   tag_specifications {
-#     resource_type = "instance"
-#     tags = {
-#       Name = "${var.environment}-nginx-node"
-#     }
-#   }
-
-#   tag_specifications {
-#     resource_type = "volume"
-#     tags = {
-#       Name = "${var.environment}-nginx-volume"
-#     }
-#   }
-
-#   lifecycle {
-#     create_before_destroy = true
-#   }
-# }
-
 # -----------------------------------------------------------------------------
 # AUTO SCALING GROUP
 # -----------------------------------------------------------------------------
@@ -575,49 +538,18 @@ module "app_asg" {
   launch_template_version   = "$Latest"
 }
 
-# resource "aws_autoscaling_group" "app" {
-#   name_prefix         = "${var.environment}-app-asg-"
-#   vpc_zone_identifier = var.app_subnet_ids
-#   target_group_arns   = [aws_lb_target_group.app.arn]
-
-#   min_size         = var.asg_min_size
-#   max_size         = var.asg_max_size
-#   desired_capacity = var.asg_desired_capacity
-
-#   health_check_type         = "ELB"
-#   health_check_grace_period = 180
-
-#   launch_template {
-#     id      = aws_launch_template.app.id
-#     version = "$Latest"
-#   }
-
-#   # Performs rolling updates when the launch template changes
-#   instance_refresh {
-#     strategy = "Rolling"
-#     preferences {
-#       min_healthy_percentage = 50
-#       instance_warmup        = 120
-#     }
-#     triggers = ["tag"]
-#   }
-
-#   lifecycle {
-#     create_before_destroy = true
-#     ignore_changes        = [desired_capacity]
-#   }
-# }
-
 # -----------------------------------------------------------------------------
 # GCP Load balancer Configuration
 # -----------------------------------------------------------------------------
 module "hybrid_neg" {
-  source     = "./modules/gcp/network_endpoint_groups/hybrid_neg"
-  project_id = var.gcp_project_id
-  name       = "hybrid-neg"
-  network    = module.gcp_vpc.vpc_name
-  subnetwork = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
-  zone       = var.gcp_zone
+  source       = "./modules/gcp/network_endpoint_groups/hybrid_neg"
+  project_id   = var.gcp_project_id
+  name         = "hybrid-neg"
+  network      = module.gcp_vpc.vpc_name
+  subnetwork   = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
+  default_port = 80
+  endpoints    = var.hybrid_neg_endpoints
+  zone         = var.gcp_zone
 }
 
 module "gcp_lb" {
@@ -633,10 +565,18 @@ module "gcp_lb" {
       is_default          = true
       protocol            = "HTTP"
       port_name           = "http"
-      is_serverless_neg   = true
-      manage_health_check = false
+      is_serverless_neg   = false
+      manage_health_check = true
+      health_check = {
+        port         = 80
+        request_path = "/"
+      }
       groups = [
-        { group = module.hybrid_neg.neg_id }
+        {
+          group                 = module.hybrid_neg.neg_id
+          balancing_mode        = "RATE"
+          max_rate_per_endpoint = 100
+        }
       ]
     }
   }
