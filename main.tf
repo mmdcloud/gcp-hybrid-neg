@@ -1,6 +1,3 @@
-# ----------------------------------------------------------------------------- 
-# GCP Configuration
-# -----------------------------------------------------------------------------
 resource "random_password" "shared_secret_0" {
   length  = 32
   special = false
@@ -9,6 +6,21 @@ resource "random_password" "shared_secret_0" {
 resource "random_password" "shared_secret_1" {
   length  = 32
   special = false
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
 
 module "gcp_vpc" {
@@ -75,7 +87,7 @@ module "aws_vpc" {
 }
 
 resource "aws_vpn_gateway" "vpn_gw" {
-  vpc_id          = module.aws_vpc.id
+  vpc_id          = module.aws_vpc.vpc_id
   amazon_side_asn = 64512
 
   tags = {
@@ -85,7 +97,7 @@ resource "aws_vpn_gateway" "vpn_gw" {
 
 resource "aws_vpn_gateway_route_propagation" "route_propagation" {
   vpn_gateway_id = aws_vpn_gateway.vpn_gw.id
-  route_table_id = module.aws_vpc.main_route_table_id
+  route_table_id = module.aws_vpc.vpc_main_route_table_id
 }
 
 resource "aws_customer_gateway" "gcp_cgw_0" {
@@ -114,7 +126,7 @@ resource "aws_vpn_connection" "vpn_conn_0" {
   type                = "ipsec.1"
   static_routes_only  = false
 
-  tunnel1_inside_cidr   = "169.254.1.0/30"
+  tunnel1_inside_cidr   = "169.254.10.0/30"
   tunnel1_preshared_key = random_password.shared_secret_0.result
   tunnel1_ike_versions  = ["ikev2"]
 
@@ -129,7 +141,7 @@ resource "aws_vpn_connection" "vpn_conn_1" {
   type                = "ipsec.1"
   static_routes_only  = false
 
-  tunnel1_inside_cidr   = "169.254.2.0/30"
+  tunnel1_inside_cidr   = "169.254.11.0/30"
   tunnel1_preshared_key = random_password.shared_secret_1.result
   tunnel1_ike_versions  = ["ikev2"]
 
@@ -177,11 +189,26 @@ resource "google_compute_vpn_tunnel" "tunnel_1" {
   ike_version                     = 2
 }
 
+# AWS Site-to-Site VPN explicitly prohibits the following link-local /30 CIDR blocks because they are reserved for internal AWS infrastructure and link-local services (such as the EC2 metadata endpoint):
+
+# 169.254.0.0/30
+# 169.254.1.0/30
+# 169.254.2.0/30
+# 169.254.3.0/30
+# 169.254.4.0/30
+# 169.254.5.0/30
+# 169.254.169.252/30
+
+# Using 169.254.1.0/30 and 169.254.2.0/30 triggers a provider validation error. Furthermore, inside an AWS Site-to-Site VPN /30 block:
+
+# Host 1 (.1): Automatically allocated to the AWS Virtual Private Gateway (VGW) (tunnel1_vgw_inside_address).
+# Host 2 (.2): Allocated to the Customer Gateway (GCP Cloud Router interface) (tunnel1_cgw_inside_address).
+
 resource "google_compute_router_interface" "router_interface_0" {
   name       = "cr-interface-0"
   router     = google_compute_router.router.name
   region     = var.gcp_region
-  ip_range   = "169.254.1.1/30"
+  ip_range   = "169.254.10.2/30"
   vpn_tunnel = google_compute_vpn_tunnel.tunnel_0.name
 }
 
@@ -189,7 +216,7 @@ resource "google_compute_router_interface" "router_interface_1" {
   name       = "cr-interface-1"
   router     = google_compute_router.router.name
   region     = var.gcp_region
-  ip_range   = "169.254.2.1/30"
+  ip_range   = "169.254.11.2/30"
   vpn_tunnel = google_compute_vpn_tunnel.tunnel_1.name
 }
 
@@ -197,7 +224,7 @@ resource "google_compute_router_peer" "bgp_peer_0" {
   name                      = "bgp-peer-0"
   router                    = google_compute_router.router.name
   region                    = var.gcp_region
-  peer_ip_address           = "169.254.1.2"
+  peer_ip_address           = "169.254.10.1"
   peer_asn                  = 64512
   interface                 = google_compute_router_interface.router_interface_0.name
   advertised_route_priority = 100
@@ -207,7 +234,7 @@ resource "google_compute_router_peer" "bgp_peer_1" {
   name                      = "bgp-peer-1"
   router                    = google_compute_router.router.name
   region                    = var.gcp_region
-  peer_ip_address           = "169.254.2.2"
+  peer_ip_address           = "169.254.11.1"
   peer_asn                  = 64512
   interface                 = google_compute_router_interface.router_interface_1.name
   advertised_route_priority = 100
@@ -259,7 +286,7 @@ resource "aws_iam_instance_profile" "app_profile" {
 module "alb_sg" {
   source = "./modules/aws/security-groups"
   name   = "alb-sg"
-  vpc_id = module.aws_vpc.id
+  vpc_id = module.aws_vpc.vpc_id
 
   ingress_rules = [
     {
@@ -287,63 +314,10 @@ module "alb_sg" {
   }
 }
 
-# resource "aws_security_group" "alb" {
-#   name_prefix = "${var.environment}-alb-sg"
-#   description = "Controls traffic to the internal Application Load Balancer"
-#   vpc_id      = module.aws_vpc.id
-
-#   ingress {
-#     description = "HTTP ingress from allowed private networks"
-#     from_port   = 80
-#     to_port     = 80
-#     protocol    = "tcp"
-#     cidr_blocks = var.allowed_ingress_cidrs
-#   }
-
-#   egress {
-#     description = "Outbound traffic to target backend instances"
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-
-#   lifecycle {
-#     create_before_destroy = true
-#   }
-# }
-
-# Backend App Security Group
-resource "aws_security_group" "app" {
-  name_prefix = "${var.environment}-app-sg-"
-  description = "Allows traffic exclusively from the internal ALB"
-  vpc_id      = module.aws_vpc.id
-
-  ingress {
-    description     = "HTTP traffic only from the ALB security group"
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    description = "Allow egress for OS updates / package repositories via NAT/VPC endpoints"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
 module "app_sg" {
   source = "./modules/aws/security-groups"
   name   = "app-sg"
-  vpc_id = module.aws_vpc.id
+  vpc_id = module.aws_vpc.vpc_id
 
   ingress_rules = [
     {
@@ -358,7 +332,7 @@ module "app_sg" {
 
   egress_rules = [
     {
-      description = "Allow all outbound traffic"
+      description = "Allow egress for OS updates / package repositories via NAT/VPC endpoints"
       from_port   = 0
       to_port     = 0
       protocol    = "-1"
@@ -374,54 +348,55 @@ module "app_sg" {
 # -----------------------------------------------------------------------------
 # 4. INTERNAL APPLICATION LOAD BALANCER
 # -----------------------------------------------------------------------------
-resource "aws_lb" "internal" {
-  name_prefix        = "int-lb-"
-  internal           = true # Ensures the ALB gets private IPs only
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = var.alb_subnet_ids
+module "internal_alb" {
+  source  = "terraform-aws-modules/alb/aws"
+  version = "~> 9.0"
 
+  name_prefix                = "int-lb"
+  load_balancer_type         = "application"
+  internal                   = true # private IPs only
+  vpc_id                     = module.aws_vpc.vpc_id
+  subnets                    = module.aws_vpc.private_subnets
+  security_groups            = [module.alb_sg.id]
+  create_security_group      = false # we're passing our own SG
   drop_invalid_header_fields = true
   enable_deletion_protection = var.environment == "prod" ? true : false
 
+  listeners = {
+    http = {
+      port     = 80
+      protocol = "HTTP"
+      forward = {
+        target_group_key = "app"
+      }
+    }
+  }
+
+  target_groups = {
+    app = {
+      name_prefix          = "app-tg"
+      backend_protocol     = "HTTP"
+      backend_port         = 80
+      target_type          = "instance"
+      deregistration_delay = 30
+      create_attachment    = false # attach via ASG / aws_lb_target_group_attachment
+
+      health_check = {
+        enabled             = true
+        path                = "/"
+        protocol            = "HTTP"
+        port                = "traffic-port"
+        matcher             = "200"
+        interval            = 15
+        timeout             = 5
+        healthy_threshold   = 2
+        unhealthy_threshold = 3
+      }
+    }
+  }
+
   tags = {
     Name = "${var.environment}-internal-alb"
-  }
-}
-
-resource "aws_lb_target_group" "app" {
-  name_prefix          = "app-tg-"
-  port                 = 80
-  protocol             = "HTTP"
-  vpc_id               = module.aws_vpc.id
-  target_type          = "instance"
-  deregistration_delay = 30
-
-  health_check {
-    enabled             = true
-    path                = "/"
-    protocol            = "HTTP"
-    port                = "traffic-port"
-    matcher             = "200"
-    interval            = 15
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.internal.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
   }
 }
 
@@ -429,34 +404,56 @@ resource "aws_lb_listener" "http" {
 # 5. LAUNCH TEMPLATE
 # -----------------------------------------------------------------------------
 module "aws_launch_template" {
-  source                               = "./modules/launch_template"
+  source                               = "./modules/aws/launch_template"
   name                                 = "aws-launch-template"
   description                          = "aws-launch-template"
   ebs_optimized                        = false
   image_id                             = data.aws_ami.ubuntu.id
-  instance_type                        = "t3.medium"
+  instance_type                        = var.instance_type
   instance_initiated_shutdown_behavior = "stop"
-  instance_profile_name                = aws_iam_instance_profile.iam_instance_profile.name
+  instance_profile_name                = aws_iam_instance_profile.app_profile.name
 
   network_interfaces = [
     {
       associate_public_ip_address = false
-      security_groups             = [module.carshub_asg_frontend_sg.id]
+      security_groups             = [module.app_sg.id]
     }
   ]
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
     set -xe
-    dnf update -y
-    dnf install -y nginx
 
-    # Create custom dynamic landing page with instance metadata
-    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-    AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+    # Detect package manager and install dependencies
+    if command -v apt-get &>/dev/null; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y nginx curl
+      WEB_DIR="/var/www/html"
+    elif command -v dnf &>/dev/null; then
+      dnf update -y
+      dnf install -y nginx curl
+      WEB_DIR="/usr/share/nginx/html"
+    elif command -v yum &>/dev/null; then
+      yum update -y
+      yum install -y nginx curl
+      WEB_DIR="/usr/share/nginx/html"
+    fi
 
-    cat <<HTML > /usr/share/nginx/html/index.html
+    # Fetch IMDSv2 metadata safely
+    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+    if [ -n "$TOKEN" ]; then
+      INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || hostname)
+      AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone || echo "unknown")
+    else
+      INSTANCE_ID=$(hostname)
+      AZ="unknown"
+    fi
+
+    # Write index.html to standard web directories
+    mkdir -p "$WEB_DIR" /usr/share/nginx/html /var/www/html
+
+    cat <<HTML | tee "$WEB_DIR/index.html" /usr/share/nginx/html/index.html /var/www/html/index.html
     <!DOCTYPE html>
     <html>
     <head><title>Internal Web Service</title></head>
@@ -475,90 +472,90 @@ module "aws_launch_template" {
   )
 }
 
-resource "aws_launch_template" "app" {
-  name_prefix   = "${var.environment}-app-lt-"
-  image_id      = data.aws_ssm_parameter.al2023_ami.value
-  instance_type = var.instance_type
+# resource "aws_launch_template" "app" {
+#   name_prefix   = "${var.environment}-app-lt-"
+#   image_id      = data.aws_ssm_parameter.al2023_ami.value
+#   instance_type = var.instance_type
 
-  iam_instance_profile {
-    arn = aws_iam_instance_profile.app_profile.arn
-  }
+#   iam_instance_profile {
+#     arn = aws_iam_instance_profile.app_profile.arn
+#   }
 
-  vpc_security_group_ids = [aws_security_group.app.id]
+#   vpc_security_group_ids = [aws_security_group.app.id]
 
-  # Production IMDSv2 enforcement (Blocks SSRF credential abuse)
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
-    instance_metadata_tags      = "enabled"
-  }
+#   # Production IMDSv2 enforcement (Blocks SSRF credential abuse)
+#   metadata_options {
+#     http_endpoint               = "enabled"
+#     http_tokens                 = "required"
+#     http_put_response_hop_limit = 1
+#     instance_metadata_tags      = "enabled"
+#   }
 
-  monitoring {
-    enabled = true
-  }
+#   monitoring {
+#     enabled = true
+#   }
 
-  block_device_mappings {
-    device_name = "/dev/xvda"
+#   block_device_mappings {
+#     device_name = "/dev/xvda"
 
-    ebs {
-      volume_size           = 20
-      volume_type           = "gp3"
-      iops                  = 3000
-      throughput            = 125
-      encrypted             = true
-      delete_on_termination = true
-    }
-  }
+#     ebs {
+#       volume_size           = 20
+#       volume_type           = "gp3"
+#       iops                  = 3000
+#       throughput            = 125
+#       encrypted             = true
+#       delete_on_termination = true
+#     }
+#   }
 
-  # Cloud-init script configuring Nginx
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -xe
-    dnf update -y
-    dnf install -y nginx
+#   # Cloud-init script configuring Nginx
+#   user_data = base64encode(<<-EOF
+#     #!/bin/bash
+#     set -xe
+#     dnf update -y
+#     dnf install -y nginx
 
-    # Create custom dynamic landing page with instance metadata
-    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
-    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-    AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+#     # Create custom dynamic landing page with instance metadata
+#     TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+#     INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+#     AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
 
-    cat <<HTML > /usr/share/nginx/html/index.html
-    <!DOCTYPE html>
-    <html>
-    <head><title>Internal Web Service</title></head>
-    <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
-      <h2>Hello from Internal NGINX</h2>
-      <p><b>Instance ID:</b> $INSTANCE_ID</p>
-      <p><b>Availability Zone:</b> $AZ</p>
-      <p><b>Status:</b> Healthy</p>
-    </body>
-    </html>
-    HTML
+#     cat <<HTML > /usr/share/nginx/html/index.html
+#     <!DOCTYPE html>
+#     <html>
+#     <head><title>Internal Web Service</title></head>
+#     <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
+#       <h2>Hello from Internal NGINX</h2>
+#       <p><b>Instance ID:</b> $INSTANCE_ID</p>
+#       <p><b>Availability Zone:</b> $AZ</p>
+#       <p><b>Status:</b> Healthy</p>
+#     </body>
+#     </html>
+#     HTML
 
-    systemctl daemon-reload
-    systemctl enable --now nginx
-  EOF
-  )
+#     systemctl daemon-reload
+#     systemctl enable --now nginx
+#   EOF
+#   )
 
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "${var.environment}-nginx-node"
-    }
-  }
+#   tag_specifications {
+#     resource_type = "instance"
+#     tags = {
+#       Name = "${var.environment}-nginx-node"
+#     }
+#   }
 
-  tag_specifications {
-    resource_type = "volume"
-    tags = {
-      Name = "${var.environment}-nginx-volume"
-    }
-  }
+#   tag_specifications {
+#     resource_type = "volume"
+#     tags = {
+#       Name = "${var.environment}-nginx-volume"
+#     }
+#   }
 
-  lifecycle {
-    create_before_destroy = true
-  }
-}
+#   lifecycle {
+#     create_before_destroy = true
+#   }
+# }
 
 # -----------------------------------------------------------------------------
 # AUTO SCALING GROUP
@@ -572,44 +569,44 @@ module "app_asg" {
   health_check_type         = "ELB"
   health_check_grace_period = 180
   force_delete              = true
-  target_group_arns         = [module.carshub_frontend_lb.target_groups["carshub_frontend_lb_target_group"].arn]
-  vpc_zone_identifier       = module.carshub_vpc.private_subnets
-  launch_template_id        = module.carshub_frontend_launch_template.id
-  launch_template_version   = "$Default"
+  target_group_arns         = [module.internal_alb.target_groups["app"].arn]
+  vpc_zone_identifier       = module.aws_vpc.private_subnets
+  launch_template_id        = module.aws_launch_template.id
+  launch_template_version   = "$Latest"
 }
 
-resource "aws_autoscaling_group" "app" {
-  name_prefix         = "${var.environment}-app-asg-"
-  vpc_zone_identifier = var.app_subnet_ids
-  target_group_arns   = [aws_lb_target_group.app.arn]
+# resource "aws_autoscaling_group" "app" {
+#   name_prefix         = "${var.environment}-app-asg-"
+#   vpc_zone_identifier = var.app_subnet_ids
+#   target_group_arns   = [aws_lb_target_group.app.arn]
 
-  min_size         = var.asg_min_size
-  max_size         = var.asg_max_size
-  desired_capacity = var.asg_desired_capacity
+#   min_size         = var.asg_min_size
+#   max_size         = var.asg_max_size
+#   desired_capacity = var.asg_desired_capacity
 
-  health_check_type         = "ELB"
-  health_check_grace_period = 180
+#   health_check_type         = "ELB"
+#   health_check_grace_period = 180
 
-  launch_template {
-    id      = aws_launch_template.app.id
-    version = "$Latest"
-  }
+#   launch_template {
+#     id      = aws_launch_template.app.id
+#     version = "$Latest"
+#   }
 
-  # Performs rolling updates when the launch template changes
-  instance_refresh {
-    strategy = "Rolling"
-    preferences {
-      min_healthy_percentage = 50
-      instance_warmup        = 120
-    }
-    triggers = ["tag"]
-  }
+#   # Performs rolling updates when the launch template changes
+#   instance_refresh {
+#     strategy = "Rolling"
+#     preferences {
+#       min_healthy_percentage = 50
+#       instance_warmup        = 120
+#     }
+#     triggers = ["tag"]
+#   }
 
-  lifecycle {
-    create_before_destroy = true
-    ignore_changes        = [desired_capacity]
-  }
-}
+#   lifecycle {
+#     create_before_destroy = true
+#     ignore_changes        = [desired_capacity]
+#   }
+# }
 
 # -----------------------------------------------------------------------------
 # GCP Load balancer Configuration
@@ -620,7 +617,7 @@ module "hybrid_neg" {
   name       = "hybrid-neg"
   network    = module.gcp_vpc.vpc_name
   subnetwork = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
-  zone       = ""
+  zone       = var.gcp_zone
 }
 
 module "gcp_lb" {
@@ -639,7 +636,7 @@ module "gcp_lb" {
       is_serverless_neg   = true
       manage_health_check = false
       groups = [
-        { group = module.carshub_frontend_service_neg.id }
+        { group = module.hybrid_neg.neg_id }
       ]
     }
   }

@@ -335,8 +335,8 @@ resource "google_compute_backend_service" "serverless" {
   dynamic "backend" {
     for_each = each.value.groups
     content {
-      group                        = backend.value.group
-      capacity_scaler              = backend.value.capacity_scaler
+      group           = backend.value.group
+      capacity_scaler = backend.value.capacity_scaler
       # Below configurations are not needed for serverless NEG
 
       # balancing_mode               = backend.value.balancing_mode
@@ -453,10 +453,10 @@ resource "google_compute_region_backend_service" "serverless" {
   dynamic "backend" {
     for_each = each.value.groups
     content {
-      group                        = backend.value.group
-      capacity_scaler              = backend.value.capacity_scaler
+      group           = backend.value.group
+      capacity_scaler = backend.value.capacity_scaler
       # Below configurations are not needed for serverless NEG
-      
+
       # balancing_mode               = backend.value.balancing_mode
       # max_connections              = backend.value.max_connections
       # max_connections_per_endpoint = backend.value.max_connections_per_endpoint

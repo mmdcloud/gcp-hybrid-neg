@@ -89,34 +89,34 @@ variable "network_firewall_policy_enforcement_order" {
 variable "subnets" {
   description = "A list of subnets to create within the VPC network."
   type = list(object({
-    name                              = string
-    description                       = optional(string)
-    ip_cidr_range                     = string
-    region                            = string
-    private_ip_google_access          = optional(bool, false)
-    purpose                           = optional(string)
-    role                              = optional(string)
-    allow_subnet_cidr_routes_overlap  = optional(bool)
-    external_ipv6_prefix              = optional(string)
-    ip_collection                     = optional(string)
-    ipv6_access_type                  = optional(string)
-    private_ipv6_google_access        = optional(string)
-    stack_type                        = optional(string)
-    send_secondary_ip_range_if_empty  = optional(bool)
-    reserved_internal_range           = optional(string)
-    resolve_subnet_mask               = optional(bool)
+    name                             = string
+    description                      = optional(string)
+    ip_cidr_range                    = string
+    region                           = string
+    private_ip_google_access         = optional(bool, false)
+    purpose                          = optional(string)
+    role                             = optional(string)
+    allow_subnet_cidr_routes_overlap = optional(bool)
+    external_ipv6_prefix             = optional(string)
+    ip_collection                    = optional(string)
+    ipv6_access_type                 = optional(string)
+    private_ipv6_google_access       = optional(string)
+    stack_type                       = optional(string)
+    send_secondary_ip_range_if_empty = optional(bool)
+    reserved_internal_range          = optional(string)
+    resolve_subnet_mask              = optional(bool)
 
     log_config = optional(object({
       aggregation_interval = optional(string)
       filter_expr          = optional(string)
       flow_sampling        = optional(number)
-      metadata              = optional(string)
-      metadata_fields       = optional(list(string))
+      metadata             = optional(string)
+      metadata_fields      = optional(list(string))
     }))
 
     secondary_ip_range = optional(list(object({
       ip_cidr_range           = string
-      range_name               = string
+      range_name              = string
       reserved_internal_range = optional(string)
     })), [])
   }))
@@ -126,17 +126,17 @@ variable "subnets" {
 variable "firewall_data" {
   description = "A list of firewall rules to create within the VPC network."
   type = list(object({
-    name                     = string
-    description              = optional(string)
-    direction                = optional(string, "INGRESS")
-    source_tags              = optional(list(string))
-    target_tags              = optional(list(string))
-    source_ranges            = optional(list(string))
-    destination_ranges       = optional(list(string))
-    source_service_accounts  = optional(list(string))
-    target_service_accounts  = optional(list(string))
-    priority                 = optional(number, 1000)
-    disabled                 = optional(bool, false)
+    name                    = string
+    description             = optional(string)
+    direction               = optional(string, "INGRESS")
+    source_tags             = optional(list(string))
+    target_tags             = optional(list(string))
+    source_ranges           = optional(list(string))
+    destination_ranges      = optional(list(string))
+    source_service_accounts = optional(list(string))
+    target_service_accounts = optional(list(string))
+    priority                = optional(number, 1000)
+    disabled                = optional(bool, false)
 
     allow_list = optional(list(object({
       protocol = string

@@ -20,8 +20,14 @@ variable "aws_region" {
 
 variable "gcp_region" {
   type        = string
-  description = "AWS Region"
+  description = "GCP Region"
   default     = "us-central1"
+}
+
+variable "gcp_zone" {
+  type        = string
+  description = "GCP Zone for zonal resources such as Hybrid NEGs."
+  default     = "us-central1-a"
 }
 
 variable "gcp_project_id" {
@@ -35,10 +41,6 @@ variable "environment" {
   description = "Deployment environment name."
 }
 
-variable "vpc_id" {
-  type        = string
-  description = "Existing VPC ID where resources will be deployed."
-}
 
 variable "allowed_ingress_cidrs" {
   type        = list(string)
@@ -53,18 +55,18 @@ variable "instance_type" {
 }
 
 variable "asg_min_size" {
-  type        = number
-  default     = 2
+  type    = number
+  default = 2
 }
 
 variable "asg_max_size" {
-  type        = number
-  default     = 4
+  type    = number
+  default = 4
 }
 
 variable "asg_desired_capacity" {
-  type        = number
-  default     = 2
+  type    = number
+  default = 2
 }
 
 variable "public_subnets" {

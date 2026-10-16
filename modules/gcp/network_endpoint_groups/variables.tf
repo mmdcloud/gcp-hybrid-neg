@@ -29,7 +29,7 @@ variable "description" {
 variable "neg_type" {
   description = "Type of network endpoint group. One of: SERVERLESS, PRIVATE_SERVICE_CONNECT, INTERNET_IP_PORT, INTERNET_FQDN_PORT, NON_GCP_PRIVATE_IP_PORT."
   type        = string
-  
+
 }
 
 variable "location" {

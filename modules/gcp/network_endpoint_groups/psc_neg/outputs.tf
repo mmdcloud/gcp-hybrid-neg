@@ -1,6 +1,6 @@
 output "id" {
   description = "The fully qualified Terraform resource ID of the created neg ."
-  value = google_compute_region_network_endpoint_group.serverless_neg.id
+  value       = google_compute_region_network_endpoint_group.serverless_neg.id
 }
 
 output "self_link" {

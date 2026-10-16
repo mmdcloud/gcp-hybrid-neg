@@ -3,7 +3,7 @@ resource "aws_launch_template" "template" {
   description   = var.description
   image_id      = var.image_id
   instance_type = var.instance_type
-  key_name      = var.key_name
+  key_name      = var.key_name != "" ? var.key_name : null
   ebs_optimized = var.ebs_optimized
   iam_instance_profile {
     name = var.instance_profile_name

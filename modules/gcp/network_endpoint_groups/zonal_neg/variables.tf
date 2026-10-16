@@ -38,7 +38,7 @@ variable "default_port" {
 
 variable "endpoints" {
   type = list(object({
-    instance   = string          # The name or self-link of the GCE VM instance
+    instance   = string           # The name or self-link of the GCE VM instance
     ip_address = optional(string) # Optional internal IP. If blank, GCP resolves to the primary internal IP of the VM.
     port       = optional(number) # Optional port override. If blank, falls back to default_port.
   }))

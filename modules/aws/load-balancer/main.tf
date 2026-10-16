@@ -7,7 +7,7 @@ resource "aws_lb" "lb" {
   security_groups            = var.security_groups
   subnets                    = var.subnets
   enable_deletion_protection = var.enable_deletion_protection
-  
+
   tags = {
     Name = var.lb_name
   }
