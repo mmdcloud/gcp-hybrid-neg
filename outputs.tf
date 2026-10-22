@@ -14,18 +14,18 @@ output "gcp_hybrid_neg_name" {
 }
 
 output "registered_hybrid_endpoints" {
-  description = "AWS NLB static private IPs registered with the GCP Hybrid NEG."
+  description = "AWS EC2 static private IPs registered with the GCP Hybrid NEG."
   value       = local.hybrid_neg_endpoints
 }
 
-output "aws_internal_nlb_dns_name" {
-  description = "DNS name of the AWS internal Network Load Balancer."
-  value       = module.internal_nlb.dns_name
+output "aws_instance_ids" {
+  description = "IDs of the AWS EC2 instances serving web traffic."
+  value       = aws_instance.app[*].id
 }
 
-output "aws_internal_nlb_arn" {
-  description = "ARN of the AWS internal Network Load Balancer."
-  value       = module.internal_nlb.arn
+output "aws_instance_private_ips" {
+  description = "Private IP addresses of the AWS EC2 instances."
+  value       = aws_instance.app[*].private_ip
 }
 
 output "bgp_status_command" {

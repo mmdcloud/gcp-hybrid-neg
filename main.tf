@@ -1,7 +1,6 @@
 # =============================================================================
-# AWS <-> GCP HA VPN (4 tunnels, BGP) + GCP external LB -> hybrid NEG -> AWS NLB
+# AWS <-> GCP HA VPN (4 tunnels, BGP) + GCP external LB -> hybrid NEG -> AWS EC2
 # =============================================================================
-
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -19,10 +18,6 @@ data "aws_ami" "ubuntu" {
 
 # -----------------------------------------------------------------------------
 # Tunnel topology
-#
-# 2 AWS VPN connections x 2 tunnels each = 4 tunnels, matched to the 4 interfaces
-# of the GCP external VPN gateway (FOUR_IPS_REDUNDANCY). Each GCP HA VPN
-# interface (0/1) terminates both tunnels of one AWS connection (0/1).
 # -----------------------------------------------------------------------------
 locals {
   vpn_tunnels = {
@@ -236,6 +231,8 @@ resource "aws_vpn_connection" "vpn_conn_1" {
   tags = {
     Name = "aws-to-gcp-conn-1"
   }
+
+  depends_on = [aws_vpn_connection.vpn_conn_0]
 }
 
 # -----------------------------------------------------------------------------
@@ -331,11 +328,12 @@ resource "aws_iam_instance_profile" "app_profile" {
 }
 
 # -----------------------------------------------------------------------------
-# Security groups (chained: GCP LB ranges -> NLB -> app instances)
+# Security Group for EC2 Web Instances
+# Allows HTTP ingress directly from Google Cloud LB & health check CIDRs over VPN
 # -----------------------------------------------------------------------------
-module "nlb_sg" {
+module "app_sg" {
   source = "./modules/aws/security-groups"
-  name   = "nlb-sg"
+  name   = "app-sg"
   vpc_id = module.aws_vpc.vpc_id
 
   ingress_rules = [
@@ -346,37 +344,6 @@ module "nlb_sg" {
       protocol        = "tcp"
       security_groups = []
       cidr_blocks     = var.gcp_lb_source_cidrs
-    }
-  ]
-
-  egress_rules = [
-    {
-      description = "Forward to targets inside the VPC"
-      from_port   = 0
-      to_port     = 0
-      protocol    = "-1"
-      cidr_blocks = ["10.0.0.0/16"]
-    }
-  ]
-
-  tags = {
-    Name = "nlb-sg"
-  }
-}
-
-module "app_sg" {
-  source = "./modules/aws/security-groups"
-  name   = "app-sg"
-  vpc_id = module.aws_vpc.vpc_id
-
-  ingress_rules = [
-    {
-      description     = "HTTP only from the NLB security group"
-      from_port       = 80
-      to_port         = 80
-      protocol        = "tcp"
-      security_groups = [module.nlb_sg.id]
-      cidr_blocks     = []
     }
   ]
 
@@ -396,100 +363,33 @@ module "app_sg" {
 }
 
 # -----------------------------------------------------------------------------
-# Internal NLB with a fixed private IP in each private subnet.
-# The hybrid NEG needs stable IPs; ASG instance IPs and ALB node IPs are not.
+# EC2 Web Instances with deterministic static private IPs
+# Registered directly into the GCP Hybrid NEG (NON_GCP_PRIVATE_IP_PORT)
 # -----------------------------------------------------------------------------
 locals {
-  # .10 in each private subnet (e.g. 10.0.4.10, 10.0.5.10, 10.0.6.10)
-  nlb_private_ips = [for cidr in var.private_subnets : cidrhost(cidr, 10)]
+  # Fixed IP (.10) in each private subnet (e.g. 10.0.4.10, 10.0.5.10, 10.0.6.10)
+  app_private_ips = [for cidr in var.private_subnets : cidrhost(cidr, 10)]
 
   hybrid_neg_endpoints = [
-    for ip in local.nlb_private_ips : {
+    for ip in local.app_private_ips : {
       ip_address = ip
       port       = 80
     }
   ]
 }
 
-module "internal_nlb" {
-  source  = "terraform-aws-modules/alb/aws"
-  version = "~> 9.0"
+resource "aws_instance" "app" {
+  count = length(var.private_subnets)
 
-  name_prefix                      = "int-nl"
-  load_balancer_type               = "network"
-  internal                         = true
-  vpc_id                           = module.aws_vpc.vpc_id
-  security_groups                  = [module.nlb_sg.id]
-  create_security_group            = false
-  enable_cross_zone_load_balancing = true
-  enable_deletion_protection       = var.environment == "prod"
+  ami                  = data.aws_ami.ubuntu.id
+  instance_type        = var.instance_type
+  subnet_id            = module.aws_vpc.private_subnets[count.index]
+  private_ip           = local.app_private_ips[count.index]
+  iam_instance_profile = aws_iam_instance_profile.app_profile.name
 
-  subnet_mapping = [
-    for i, cidr in var.private_subnets : {
-      subnet_id            = module.aws_vpc.private_subnets[i]
-      private_ipv4_address = cidrhost(cidr, 10)
-    }
-  ]
+  vpc_security_group_ids = [module.app_sg.id]
 
-  listeners = {
-    tcp_80 = {
-      port     = 80
-      protocol = "TCP"
-      forward = {
-        target_group_key = "app"
-      }
-    }
-  }
-
-  target_groups = {
-    app = {
-      name_prefix          = "app-tg"
-      backend_protocol     = "TCP"
-      backend_port         = 80
-      target_type          = "instance"
-      deregistration_delay = 30
-      preserve_client_ip   = false # targets see NLB IPs, so app_sg can reference nlb_sg
-      create_attachment    = false # attached via the ASG
-
-      health_check = {
-        enabled             = true
-        protocol            = "HTTP"
-        path                = "/"
-        port                = "traffic-port"
-        matcher             = "200"
-        interval            = 10 # NLB only allows 10 or 30
-        healthy_threshold   = 3  # NLB requires healthy == unhealthy
-        unhealthy_threshold = 3
-      }
-    }
-  }
-
-  tags = merge(var.tags, {
-    Name = "${var.environment}-internal-nlb"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Launch template + ASG
-# -----------------------------------------------------------------------------
-module "aws_launch_template" {
-  source                               = "./modules/aws/launch_template"
-  name                                 = "aws-launch-template"
-  description                          = "aws-launch-template"
-  ebs_optimized                        = false
-  image_id                             = data.aws_ami.ubuntu.id
-  instance_type                        = var.instance_type
-  instance_initiated_shutdown_behavior = "stop"
-  instance_profile_name                = aws_iam_instance_profile.app_profile.name
-
-  network_interfaces = [
-    {
-      associate_public_ip_address = false
-      security_groups             = [module.app_sg.id]
-    }
-  ]
-
-  user_data = base64encode(<<-EOF
+  user_data = <<-EOF
     #!/bin/bash
     set -xe
 
@@ -514,6 +414,7 @@ module "aws_launch_template" {
       <h2>Hello from Internal NGINX</h2>
       <p><b>Instance ID:</b> $INSTANCE_ID</p>
       <p><b>Availability Zone:</b> $AZ</p>
+      <p><b>Private IP:</b> ${local.app_private_ips[count.index]}</p>
       <p><b>Status:</b> Healthy</p>
     </body>
     </html>
@@ -521,33 +422,20 @@ module "aws_launch_template" {
 
     systemctl enable --now nginx
   EOF
-  )
-}
 
-module "app_asg" {
-  source                    = "./modules/aws/auto_scaling_group"
-  name                      = "app-asg"
-  min_size                  = var.asg_min_size
-  max_size                  = var.asg_max_size
-  desired_capacity          = var.asg_desired_capacity
-  health_check_type         = "ELB"
-  health_check_grace_period = 180
-  force_delete              = true
-  target_group_arns         = [module.internal_nlb.target_groups["app"].arn]
-  vpc_zone_identifier       = module.aws_vpc.private_subnets
-  launch_template_id        = module.aws_launch_template.id
-  launch_template_version   = "$Latest"
+  tags = merge(var.tags, {
+    Name = "${var.environment}-web-${count.index + 1}"
+  })
 }
 
 # -----------------------------------------------------------------------------
-# GCP external load balancer -> hybrid NEG -> AWS NLB private IPs (over VPN)
+# GCP external load balancer -> hybrid NEG -> AWS EC2 private IPs (over VPN)
 # -----------------------------------------------------------------------------
 module "hybrid_neg" {
   source       = "./modules/gcp/network_endpoint_groups/hybrid_neg"
   project_id   = var.gcp_project_id
   name         = "hybrid-neg"
   network      = module.gcp_vpc.vpc_name
-  subnetwork   = module.gcp_vpc.subnets["hybrid-neg-subnet"].name
   default_port = 80
   endpoints    = local.hybrid_neg_endpoints
   zone         = var.gcp_zone

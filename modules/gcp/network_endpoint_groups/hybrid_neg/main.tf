@@ -3,7 +3,6 @@ resource "google_compute_network_endpoint_group" "hybrid_neg" {
   project               = var.project_id
   name                  = var.name
   network               = var.network
-  subnetwork            = var.subnetwork
   zone                  = var.zone
   network_endpoint_type = "NON_GCP_PRIVATE_IP_PORT"
   default_port          = var.default_port

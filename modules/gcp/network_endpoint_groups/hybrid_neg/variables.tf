@@ -13,14 +13,10 @@ variable "network" {
   type        = string
 }
 
-variable "subnetwork" {
-  description = "The VPC subnetwork name or self_link where the endpoints are reachable."
-  type        = string
-}
-
 variable "zone" {
   description = "The GCP zone where the Hybrid NEG will be created."
   type        = string
+  default = null
 }
 
 variable "default_port" {
