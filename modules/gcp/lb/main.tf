@@ -404,7 +404,7 @@ resource "google_compute_backend_service" "this" {
     content {
       group                        = backend.value.group
       balancing_mode               = backend.value.balancing_mode
-      capacity_scaler              = backend.value.capacity_scaler
+      capacity_scaler              = coalesce(backend.value.capacity_scaler, 1.0)
       max_connections              = backend.value.max_connections
       max_connections_per_endpoint = backend.value.max_connections_per_endpoint
       max_connections_per_instance = backend.value.max_connections_per_instance
@@ -505,7 +505,7 @@ resource "google_compute_region_backend_service" "this" {
     content {
       group                        = backend.value.group
       balancing_mode               = backend.value.balancing_mode
-      capacity_scaler              = backend.value.capacity_scaler
+      capacity_scaler              = coalesce(backend.value.capacity_scaler, 1.0)
       max_connections              = backend.value.max_connections
       max_connections_per_endpoint = backend.value.max_connections_per_endpoint
       max_connections_per_instance = backend.value.max_connections_per_instance

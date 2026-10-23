@@ -467,6 +467,7 @@ module "gcp_lb" {
           group                 = module.hybrid_neg.neg_id
           balancing_mode        = "RATE"
           max_rate_per_endpoint = 100
+          capacity_scaler       = 1.0
         }
       ]
     }
