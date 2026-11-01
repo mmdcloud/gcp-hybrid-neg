@@ -16,7 +16,7 @@ variable "network" {
 variable "zone" {
   description = "The GCP zone where the Hybrid NEG will be created."
   type        = string
-  default = null
+  default     = null
 }
 
 variable "default_port" {

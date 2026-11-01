@@ -1,0 +1,37 @@
+# ==============================================================================
+# AWS Configuration
+# ==============================================================================
+aws_region      = "us-east-1"
+public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+private_subnets = ["10.0.4.0/24", "10.0.5.0/24", "10.0.6.0/24"]
+azs             = ["us-east-1a", "us-east-1b", "us-east-1c"]
+instance_type   = "t3.small"
+
+# ==============================================================================
+# Google Cloud Platform (GCP) Configuration
+# ==============================================================================
+gcp_project_id = "my-gcp-production-project-id"
+gcp_region     = "us-central1"
+gcp_zone       = "us-central1-a"
+
+# ==============================================================================
+# Environment & Tagging
+# ==============================================================================
+environment = "prod"
+
+tags = {
+  Environment = "production"
+  ManagedBy   = "terraform"
+  Project     = "gcp-hybrid-neg-aws"
+}
+
+# ==============================================================================
+# Optional: Google Load Balancer & Health Check Source Ranges
+# ==============================================================================
+# Defaults cover Envoy-based global external Application LB proxies and classic probes:
+# gcp_lb_source_cidrs = [
+#   "34.96.0.0/20",    # Envoy-based global external Application LB proxies / probes
+#   "34.127.192.0/18", # Envoy-based global external Application LB proxies / probes
+#   "35.191.0.0/16",   # Classic health check probes
+#   "130.211.0.0/22"   # Classic health check probes
+# ]
