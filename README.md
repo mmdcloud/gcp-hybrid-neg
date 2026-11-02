@@ -119,7 +119,7 @@ The following screenshots from live production Google Cloud and Amazon Web Servi
 ### 1. Successful Terraform Provisioning
 Provisioning completed with 71 resources added across GCP and AWS, outputting instance IDs, static private IPs, and the GCP Load Balancer VIP (`136.82.69.238`):
 
-![Terraform Apply Complete](screenshots/01-terraform-apply-outputs.png)
+![Terraform Apply Complete](screenshots/Screenshot%20from%202026-11-01%2016-01-47.png)
 
 ---
 
@@ -128,12 +128,12 @@ Provisioning completed with 71 resources added across GCP and AWS, outputting in
 #### GCP Global External Load Balancer
 Frontend Anycast VIP `136.82.69.238:80` on the Premium Network Tier, forwarding to backend service `gcp-lb-lb-backend`:
 
-![GCP External Load Balancer](screenshots/09-gcp-external-load-balancer-details.png)
+![GCP External Load Balancer](screenshots/Screenshot%20from%202026-11-01%2016-06-40.png)
 
 #### Hybrid Network Endpoint Group (NEG)
 Zonal NEG `hybrid-neg` (`NON_GCP_PRIVATE_IP_PORT`) in `us-central1-a` actively tracking the three AWS private IPs on port 80:
 
-![GCP Hybrid NEG Endpoints](screenshots/10-gcp-hybrid-neg-endpoints.png)
+![GCP Hybrid NEG Endpoints](screenshots/Screenshot%20from%202026-11-01%2016-08-18.png)
 
 ---
 
@@ -146,17 +146,17 @@ All four IPsec tunnels operating concurrently with active BGP sessions:
 - `ha-vpn-tunnel-1-1`: Interface 1 $\leftrightarrow$ `3.214.55.117` (BGP `169.254.11.2` / `169.254.11.1`) — **Established**
 - `ha-vpn-tunnel-1-2`: Interface 1 $\leftrightarrow$ `107.21.203.197` (BGP `169.254.11.6` / `169.254.11.5`) — **Established**
 
-![GCP Cloud VPN Tunnels Established](screenshots/06-gcp-ha-vpn-tunnels-bgp-established.png)
+![GCP Cloud VPN Tunnels Established](screenshots/Screenshot%20from%202026-11-01%2016-05-31.png)
 
 #### Cloud HA VPN Gateway
 Dual interfaces terminating on distinct Google border network routing engines (`34.183.40.104` and `34.184.40.117`):
 
-![GCP HA VPN Gateway](screenshots/07-gcp-ha-vpn-gateway-dual-interfaces.png)
+![GCP HA VPN Gateway](screenshots/Screenshot%20from%202026-11-01%2016-06-00.png)
 
 #### Peer VPN Gateway (4 Public IPs)
 GCP External Gateway configured with `FOUR_IPS_REDUNDANCY` matching AWS's 4 public endpoints:
 
-![GCP Peer VPN Gateway](screenshots/08-gcp-peer-vpn-gateway-four-ips.png)
+![GCP Peer VPN Gateway](screenshots/Screenshot%20from%202026-11-01%2016-06-06.png)
 
 ---
 
@@ -165,22 +165,22 @@ GCP External Gateway configured with `FOUR_IPS_REDUNDANCY` matching AWS's 4 publ
 #### Multi-AZ Private EC2 Instances
 Three Ubuntu 24.04 web nodes running in private subnets across `us-east-1a`, `us-east-1b`, and `us-east-1c`. All status checks passing with strictly no public IPv4 addresses assigned:
 
-![AWS EC2 Instances](screenshots/02-aws-ec2-instances-multi-az.png)
+![AWS EC2 Instances](screenshots/Screenshot%20from%202026-11-01%2016-03-46.png)
 
 #### AWS Virtual Private Gateway (VGW)
 `aws-vgw-gcp` in `Available` state, attached to `aws-vpc` with Amazon ASN `64512`:
 
-![AWS Virtual Private Gateway](screenshots/04-aws-virtual-private-gateway.png)
+![AWS Virtual Private Gateway](screenshots/Screenshot%20from%202026-11-01%2016-04-31.png)
 
 #### AWS Customer Gateways
 Dual Customer Gateways mapping to GCP HA VPN interfaces with BGP ASN `64514`:
 
-![AWS Customer Gateways](screenshots/03-aws-customer-gateways.png)
+![AWS Customer Gateways](screenshots/Screenshot%20from%202026-11-01%2016-04-16.png)
 
 #### AWS Site-to-Site VPN Connections
 Both VPN connections (`aws-to-gcp-conn-0`, `aws-to-gcp-conn-1`) in `Available` state:
 
-![AWS Site to Site VPN Connections](screenshots/05-aws-vpn-connections.png)
+![AWS Site to Site VPN Connections](screenshots/Screenshot%20from%202026-11-01%2016-04-39.png)
 
 ---
 
@@ -295,16 +295,17 @@ Google Cloud HA VPN provides a **99.99% service availability SLA** when configur
 ├── Makefile                                # Lifecycle automation targets (init, plan, apply, test)
 ├── README.md                               # Production architecture and operations manual
 ├── screenshots/                            # Live deployment validation screenshots
-│   ├── 01-terraform-apply-outputs.png
-│   ├── 02-aws-ec2-instances-multi-az.png
-│   ├── 03-aws-customer-gateways.png
-│   ├── 04-aws-virtual-private-gateway.png
-│   ├── 05-aws-vpn-connections.png
-│   ├── 06-gcp-ha-vpn-tunnels-bgp-established.png
-│   ├── 07-gcp-ha-vpn-gateway-dual-interfaces.png
-│   ├── 08-gcp-peer-vpn-gateway-four-ips.png
-│   ├── 09-gcp-external-load-balancer-details.png
-│   └── 10-gcp-hybrid-neg-endpoints.png
+│   ├── Screenshot from 2026-11-01 16-01-47.png
+│   ├── Screenshot from 2026-11-01 16-03-46.png
+│   ├── Screenshot from 2026-11-01 16-04-16.png
+│   ├── Screenshot from 2026-11-01 16-04-31.png
+│   ├── Screenshot from 2026-11-01 16-04-39.png
+│   ├── Screenshot from 2026-11-01 16-05-31.png
+│   ├── Screenshot from 2026-11-01 16-05-53.png
+│   ├── Screenshot from 2026-11-01 16-06-00.png
+│   ├── Screenshot from 2026-11-01 16-06-06.png
+│   ├── Screenshot from 2026-11-01 16-06-40.png
+│   └── Screenshot from 2026-11-01 16-08-18.png
 └── terraform/
     ├── main.tf                             # Primary multi-cloud orchestration (VPN, Compute, NEG, LB)
     ├── variables.tf                        # Variable schema and enterprise defaults
@@ -395,7 +396,7 @@ terraform apply -var-file="terraform.tfvars"
 
 Upon completion, Terraform outputs all connection details:
 
-![Terraform Provisioning Outputs](screenshots/01-terraform-apply-outputs.png)
+![Terraform Provisioning Outputs](screenshots/Screenshot%20from%202026-11-01%2016-01-47.png)
 
 ---
 
