@@ -18,6 +18,7 @@ An enterprise-grade, automated Terraform configuration establishing an end-to-en
 ## Table of Contents
 
 - [Architectural Overview](#architectural-overview)
+- [Visual Proof of Deployment](#visual-proof-of-deployment)
 - [Traffic Flow & Packet Lifecycle](#traffic-flow--packet-lifecycle)
 - [Network Topology & BGP Addressing Matrix](#network-topology--bgp-addressing-matrix)
 - [High Availability & SLA Architecture](#high-availability--sla-architecture)
@@ -111,10 +112,82 @@ flowchart TD
 
 ---
 
+## Visual Proof of Deployment
+
+The following screenshots from live production Google Cloud and Amazon Web Services consoles validate the deployed infrastructure:
+
+### 1. Successful Terraform Provisioning
+Provisioning completed with 71 resources added across GCP and AWS, outputting instance IDs, static private IPs, and the GCP Load Balancer VIP (`136.82.69.238`):
+
+![Terraform Apply Complete](screenshots/01-terraform-apply-outputs.png)
+
+---
+
+### 2. Google Cloud Ingress & Hybrid NEG
+
+#### GCP Global External Load Balancer
+Frontend Anycast VIP `136.82.69.238:80` on the Premium Network Tier, forwarding to backend service `gcp-lb-lb-backend`:
+
+![GCP External Load Balancer](screenshots/09-gcp-external-load-balancer-details.png)
+
+#### Hybrid Network Endpoint Group (NEG)
+Zonal NEG `hybrid-neg` (`NON_GCP_PRIVATE_IP_PORT`) in `us-central1-a` actively tracking the three AWS private IPs on port 80:
+
+![GCP Hybrid NEG Endpoints](screenshots/10-gcp-hybrid-neg-endpoints.png)
+
+---
+
+### 3. Google Cloud HA VPN & BGP Tunnels
+
+#### Cloud HA VPN Tunnels (All 4 BGP Sessions Established)
+All four IPsec tunnels operating concurrently with active BGP sessions:
+- `ha-vpn-tunnel-0-1`: Interface 0 $\leftrightarrow$ `3.232.195.54` (BGP `169.254.10.2` / `169.254.10.1`) — **Established**
+- `ha-vpn-tunnel-0-2`: Interface 0 $\leftrightarrow$ `35.171.253.131` (BGP `169.254.10.6` / `169.254.10.5`) — **Established**
+- `ha-vpn-tunnel-1-1`: Interface 1 $\leftrightarrow$ `3.214.55.117` (BGP `169.254.11.2` / `169.254.11.1`) — **Established**
+- `ha-vpn-tunnel-1-2`: Interface 1 $\leftrightarrow$ `107.21.203.197` (BGP `169.254.11.6` / `169.254.11.5`) — **Established**
+
+![GCP Cloud VPN Tunnels Established](screenshots/06-gcp-ha-vpn-tunnels-bgp-established.png)
+
+#### Cloud HA VPN Gateway
+Dual interfaces terminating on distinct Google border network routing engines (`34.183.40.104` and `34.184.40.117`):
+
+![GCP HA VPN Gateway](screenshots/07-gcp-ha-vpn-gateway-dual-interfaces.png)
+
+#### Peer VPN Gateway (4 Public IPs)
+GCP External Gateway configured with `FOUR_IPS_REDUNDANCY` matching AWS's 4 public endpoints:
+
+![GCP Peer VPN Gateway](screenshots/08-gcp-peer-vpn-gateway-four-ips.png)
+
+---
+
+### 4. Amazon Web Services (AWS) Infrastructure
+
+#### Multi-AZ Private EC2 Instances
+Three Ubuntu 24.04 web nodes running in private subnets across `us-east-1a`, `us-east-1b`, and `us-east-1c`. All status checks passing with strictly no public IPv4 addresses assigned:
+
+![AWS EC2 Instances](screenshots/02-aws-ec2-instances-multi-az.png)
+
+#### AWS Virtual Private Gateway (VGW)
+`aws-vgw-gcp` in `Available` state, attached to `aws-vpc` with Amazon ASN `64512`:
+
+![AWS Virtual Private Gateway](screenshots/04-aws-virtual-private-gateway.png)
+
+#### AWS Customer Gateways
+Dual Customer Gateways mapping to GCP HA VPN interfaces with BGP ASN `64514`:
+
+![AWS Customer Gateways](screenshots/03-aws-customer-gateways.png)
+
+#### AWS Site-to-Site VPN Connections
+Both VPN connections (`aws-to-gcp-conn-0`, `aws-to-gcp-conn-1`) in `Available` state:
+
+![AWS Site to Site VPN Connections](screenshots/05-aws-vpn-connections.png)
+
+---
+
 ## Traffic Flow & Packet Lifecycle
 
 ### 1. Ingress Journey (Client to AWS EC2)
-1. **Anycast Ingress**: A user sends an HTTP request to the GCP Global Anycast IPv4 address. The packet is terminated at the closest Google Edge PoP.
+1. **Anycast Ingress**: A user sends an HTTP request to the GCP Global Anycast IPv4 address (`136.82.69.238`). The packet is terminated at the closest Google Edge PoP.
 2. **Envoy Proxy Processing**: The request is processed by Google's globally distributed Envoy proxy layer (`34.96.0.0/20`, `34.127.192.0/18`).
 3. **Hybrid NEG Lookup**: The URL Map and Backend Service direct traffic to the zonal Hybrid NEG (`NON_GCP_PRIVATE_IP_PORT`). The NEG maintains static endpoints: `10.0.4.10:80`, `10.0.5.10:80`, and `10.0.6.10:80`.
 4. **VPN Encapsulation**: Traffic addressed to AWS private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`) is routed to `cr-ha-vpn`. Cloud Router selects one of the 4 active IPsec tunnels using BGP Equal-Cost Multi-Path (ECMP).
@@ -221,6 +294,17 @@ Google Cloud HA VPN provides a **99.99% service availability SLA** when configur
 .
 ├── Makefile                                # Lifecycle automation targets (init, plan, apply, test)
 ├── README.md                               # Production architecture and operations manual
+├── screenshots/                            # Live deployment validation screenshots
+│   ├── 01-terraform-apply-outputs.png
+│   ├── 02-aws-ec2-instances-multi-az.png
+│   ├── 03-aws-customer-gateways.png
+│   ├── 04-aws-virtual-private-gateway.png
+│   ├── 05-aws-vpn-connections.png
+│   ├── 06-gcp-ha-vpn-tunnels-bgp-established.png
+│   ├── 07-gcp-ha-vpn-gateway-dual-interfaces.png
+│   ├── 08-gcp-peer-vpn-gateway-four-ips.png
+│   ├── 09-gcp-external-load-balancer-details.png
+│   └── 10-gcp-hybrid-neg-endpoints.png
 └── terraform/
     ├── main.tf                             # Primary multi-cloud orchestration (VPN, Compute, NEG, LB)
     ├── variables.tf                        # Variable schema and enterprise defaults
@@ -287,7 +371,7 @@ environment     = "prod"
 
 ### Step 2: Initialize & Validate
 ```bash
-# Using Makefile
+# Using Makefile from root
 make init
 make validate
 
@@ -308,6 +392,10 @@ terraform plan -var-file="terraform.tfvars"
 terraform apply -var-file="terraform.tfvars"
 ```
 *Provisioning takes approximately 4–6 minutes while AWS creates the Virtual Private Gateway, NAT Gateway, EC2 instances, and GCP provisions the HA VPN Gateway and Global Load Balancer.*
+
+Upon completion, Terraform outputs all connection details:
+
+![Terraform Provisioning Outputs](screenshots/01-terraform-apply-outputs.png)
 
 ---
 
@@ -431,4 +519,3 @@ terraform destroy -var-file="terraform.tfvars"
 
 > [!CAUTION]
 > Destroying this configuration will terminate the IPsec tunnels, release the GCP Global Anycast IP address, and terminate all backend EC2 instances. Ensure DNS traffic has been redirected prior to teardown.
-
