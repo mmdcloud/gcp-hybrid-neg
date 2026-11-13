@@ -20,12 +20,12 @@ output "registered_hybrid_endpoints" {
 
 output "aws_instance_ids" {
   description = "IDs of the AWS EC2 instances serving web traffic."
-  value       = aws_instance.app[*].id
+  value       = module.app[*].id
 }
 
 output "aws_instance_private_ips" {
   description = "Private IP addresses of the AWS EC2 instances."
-  value       = aws_instance.app[*].private_ip
+  value       = module.app[*].private_ip
 }
 
 output "bgp_status_command" {

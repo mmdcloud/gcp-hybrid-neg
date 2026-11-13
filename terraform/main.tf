@@ -378,16 +378,17 @@ locals {
   ]
 }
 
-resource "aws_instance" "app" {
-  count = length(var.private_subnets)
-
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = var.instance_type
-  subnet_id            = module.aws_vpc.private_subnets[count.index]
-  private_ip           = local.app_private_ips[count.index]
-  iam_instance_profile = aws_iam_instance_profile.app_profile.name
-
-  vpc_security_group_ids = [module.app_sg.id]
+module "app" {
+  source                      = "./modules/aws/ec2"
+  count                       = length(var.private_subnets)
+  name                        = "${var.environment}-web-${count.index + 1}"
+  ami_id                      = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  subnet_id                   = module.aws_vpc.private_subnets[count.index]
+  private_ip                  = local.app_private_ips[count.index]
+  iam_instance_profile        = aws_iam_instance_profile.app_profile.name
+  associate_public_ip_address = false
+  vpc_security_group_ids      = [module.app_sg.id]
 
   user_data = <<-EOF
     #!/bin/bash
@@ -423,9 +424,7 @@ resource "aws_instance" "app" {
     systemctl enable --now nginx
   EOF
 
-  tags = merge(var.tags, {
-    Name = "${var.environment}-web-${count.index + 1}"
-  })
+  tags = var.tags
 }
 
 # -----------------------------------------------------------------------------
